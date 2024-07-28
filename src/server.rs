@@ -28,15 +28,13 @@ struct ServerState {
     state: RaftState,
     voted_for: Option<u32>,
     log: Vec<LogEntry>,
-    commit_index: u32, 
-    last_applied: u32, // index of the highest log entry applied to state machine
-    next_index: Vec<u32>, // index of the next log entry to send to each server
+    commit_index: u32,
+    previous_log_index: u32, 
+    next_index: Vec<u32>,
     match_index: Vec<u32>,
     election_timeout: Duration,
     last_heartbeat: Instant,
     votes_received: HashMap<u32, bool>,
-    // Add leadership preference map
-    leadership_preferences: HashMap<u32, u32>, // key: follower_id, value: preference_score
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +49,6 @@ struct LogEntry {
     leader_id: u32,
     server_id: u32,
     term: u32,
-    index: u32,
     command: LogCommand,
     data: u32,
 }
@@ -89,14 +86,12 @@ impl Server {
             voted_for: None,
             log: Vec::new(),
             commit_index: 0,
-            last_applied: 0,
+            previous_log_index: 0,
             next_index: vec![0; peers.len()],
             match_index: vec![0; peers.len()],
             election_timeout: config.election_timeout,
             last_heartbeat: Instant::now(),
             votes_received: HashMap::new(),
-            // Initialize leadership preferences
-            leadership_preferences: config.leadership_preferences.clone(),
         };
         let network_manager = TCPManager::new(config.address.clone(), config.port);
 
@@ -133,7 +128,6 @@ impl Server {
             return;
         }
 
-        // if current term is 0, increment term and and assume leadership to default leader
         if self.state.current_term == 0 {
             self.state.current_term += 1;
             self.state.current_term = self.state.current_term;
@@ -214,23 +208,28 @@ impl Server {
             self.receive_rpc().await;
 
             // TODO: Write coalescing with debouncing
-            println!("write buffer: {:?}", self.write_buffer);
+            // Move this to a separate thread to avoid blocking the main loop
             if !self.write_buffer.is_empty() {
-                println!("Preparing write buffer");
-                let data = self.prepare_append_batch(self.id, self.state.current_term, 0, 0, self.write_buffer.clone());
+                let append_batch = self.prepare_append_batch(self.id, self.state.current_term, self.state.previous_log_index, self.state.commit_index, self.write_buffer.clone());
+
+                for entry in self.write_buffer.clone() {
+                    let data = [2u32.to_be_bytes(), entry.data.to_be_bytes()].concat();
+                    self.append_log(self.id, self.state.current_term, &data).await;
+                }
+
                 let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
                     self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
                 }).collect();
-                println!("Sending write buffer to peers: {:?}, data: {:?}", addresses, data);
-                let _ = self.network_manager.broadcast(&data, addresses).await;
+                if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
+                    eprintln!("Failed to send append batch: {}", e);
+                }
                 self.write_buffer.clear();
-                self.debounce_timer = Instant::now();
+                self.debounce_timer = Instant::now();            
             }
         }
     }
     
     async fn receive_rpc(&mut self) {
-        // Receive RPC from peer
         let data = self.network_manager.receive().await.unwrap();
         self.handle_rpc(data).await;
     }
@@ -238,7 +237,7 @@ impl Server {
     fn prepare_append_batch(&self, id: u32, term: u32, prev_log_index: u32, commit_index: u32, write_buffer: Vec<LogEntry>) -> Vec<u8> {
         let mut data = [id.to_be_bytes(), term.to_be_bytes(), 2u32.to_be_bytes(), prev_log_index.to_be_bytes(), commit_index.to_be_bytes()].concat();
         for entry in write_buffer {
-            let entry_data = [entry.term.to_be_bytes(), entry.index.to_be_bytes(), entry.data.to_be_bytes()].concat();
+            let entry_data = [entry.term.to_be_bytes(), entry.data.to_be_bytes()].concat();
             data.extend_from_slice(&entry_data);
         }
         data
@@ -285,13 +284,13 @@ impl Server {
                 self.handle_append_entries(data).await;
             }
             MesageType::AppendEntriesResponse => {
-                self.handle_append_entries_response().await;
+                self.handle_append_entries_response(&data).await;
             }
             MesageType::Heartbeat => {
                 self.handle_heartbeat().await;
             }
             MesageType::HeartbeatResponse => {
-                self.handle_heartbeat_response(data).await;
+                self.handle_heartbeat_response().await;
             }
             MesageType::ClientRequest => {
                 self.handle_client_request(data).await;
@@ -305,11 +304,13 @@ impl Server {
         }
 
         let term = self.state.current_term;
-        let index = self.state.log.len() as u32;
         let command = LogCommand::Set;
         let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
-        let entry = LogEntry { leader_id: self.id, server_id: self.id, term, index, command, data };
+        let entry = LogEntry { leader_id: self.id, server_id: self.id, term, command, data };
         println!("Received client request: {:?}", entry);
+        self.state.previous_log_index += 1;
+        self.state.commit_index += 1;
+        self.state.current_term += 1;
         self.write_buffer.push(entry);
     }
 
@@ -342,7 +343,6 @@ impl Server {
             return;
         }
 
-
         // get data from the message
         let id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let leader_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
@@ -357,43 +357,67 @@ impl Server {
         }
         
         let prev_log_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
-        // TODO: Implement log compaction
-        // let commit_index = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        if prev_log_index > self.state.previous_log_index {
+            self.state.previous_log_index = prev_log_index;
+        } else {
+            return;
+        }
+
+        let commit_index = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        if commit_index > self.state.commit_index {
+            self.state.commit_index = commit_index;
+        } else {
+            return;
+        }
+
         let data = &data[20..];
-        self.append_log(id, leader_term, prev_log_index, data).await;
+        self.append_log(id, leader_term, data).await;
     }
 
-    async fn handle_append_entries_response(&mut self) {
-        let data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 3u32.to_be_bytes()].concat();
-        let response = self.network_manager.send(&data).await;
-        if let Err(e) = response {
-            eprintln!("Failed to send append entries response: {}", e);
+    async fn handle_append_entries_response(&mut self, data: &[u8]) {
+        let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+        let success = u32::from_be_bytes(data[8..12].try_into().unwrap()) == 1;
+
+        if term < self.state.current_term {
+            return;
+        }
+
+        self.state.current_term = term;
+
+        if success {
+            let last_log_index = self.state.previous_log_index;
+            self.state.match_index[peer_id as usize - 1] = last_log_index;
+            self.state.next_index[peer_id as usize - 1] = last_log_index + 1;
+
+            let mut match_indices = self.state.match_index.clone();
+            match_indices.sort();
+            let quorum_index = match_indices[self.peers.len() / 2];
+
+            if quorum_index > self.state.commit_index {
+                self.state.commit_index = quorum_index;
+            }
+        } else {
+            self.state.next_index[peer_id as usize - 1] -= 1;
         }
     }
 
     async fn handle_heartbeat(&mut self) {
-        let data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 5u32.to_be_bytes()].concat();
-        let response = self.network_manager.send(&data).await;
-        if let Err(e) = response {
-            eprintln!("Failed to send heartbeat: {}", e);
-        }
-    }
-
-    async fn handle_heartbeat_response(&mut self, data: Vec<u8>) {
-
-        let message_type = u32::from_be_bytes(data[8..12].try_into().unwrap());
-        if message_type != 5 {
+        if self.state.state != RaftState::Follower {
             return;
         }
-
         self.state.last_heartbeat = Instant::now();
     }
 
-    async fn append_log(&mut self, id: u32, term: u32, prev_log_index: u32, data: &[u8]) {
-        println!("Appending logs to disk from peer: {}", id);
+    async fn handle_heartbeat_response(&mut self) {
+        // Noop
+    }
+
+    async fn append_log(&mut self, id: u32, term: u32, data: &[u8]) {
+        println!("Appending logs to disk from peer: {} to server: {}", id, self.id);
         println!("Data: {:?}", data);
 
-        let log_entries = self.deserialize_log_entries(id, term, prev_log_index, data);
+        let log_entries = self.deserialize_log_entries(id, term, data);
 
         for entry in log_entries {
             self.state.log.push(entry.clone());
@@ -406,12 +430,12 @@ impl Server {
         println!("Log after appending: {:?}", self.state.log);
     }
 
-    fn deserialize_log_entries(&self, sender_id: u32, term: u32, prev_log_index: u32, data: &[u8]) -> Vec<LogEntry> {
+    fn deserialize_log_entries(&self, sender_id: u32, term: u32, data: &[u8]) -> Vec<LogEntry> {
         let mut entries = Vec::new();
         let mut index = 0;
         while index < data.len() {
             let command_type = u32::from_be_bytes(data[index..index + 4].try_into().unwrap());
-            index += 8;
+            index += 4;
             let command = match command_type {
                 0 => LogCommand::Noop,
                 1 => LogCommand::Set,
@@ -425,7 +449,6 @@ impl Server {
                 leader_id: sender_id,
                 server_id: self.id,
                 term,
-                index: prev_log_index+1,
                 command,
                 data: entry_data,
             };
@@ -436,5 +459,11 @@ impl Server {
 
     fn is_quorum(&self, votes: u32) -> bool {
         votes > (self.peers.len() / 2).try_into().unwrap_or_default()
+    }
+
+    async fn stop(&self) {
+        if let Err(e) = self.network_manager.close().await {
+            eprintln!("Failed to close network manager: {}", e);
+        }
     }
 }
