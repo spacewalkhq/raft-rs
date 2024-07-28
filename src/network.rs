@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 #[async_trait]
 pub trait NetworkLayer: Send + Sync {
-    async fn send(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn receive(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
     async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn open(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
@@ -60,8 +60,8 @@ impl TCPManager {
 
 #[async_trait]
 impl NetworkLayer for TCPManager {
-    async fn send(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let addr: SocketAddr = format!("{}:{}", self.address, self.port).parse()?;
+    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let addr: SocketAddr = format!("{}:{}", address, port).parse()?;
         Self::async_send(data, addr).await?;
         Ok(())
     }
@@ -126,7 +126,7 @@ mod tests {
                 }
             }
         });
-        network.send(&data).await.unwrap();
+        network.send("127.0.0.1", "8082", &data).await.unwrap();
         handler.await.unwrap();
     }
 }

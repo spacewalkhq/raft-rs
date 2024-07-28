@@ -6,6 +6,7 @@ An understandable, fast, scalable and production-ready Raft implementation.
 - [x] Fast
 - [x] Scalable
 - [x] Zero-Copy support
+- [x] Default Leader 
 
 ## To-Do
 - [ ] io_uring support

@@ -20,7 +20,7 @@ async fn main() {
     // Create server configs
     let configs: Vec<_> = cluster_nodes.iter().map(|&id| {
         ServerConfig {
-            election_timeout: Duration::from_secs(5),
+            election_timeout: Duration::from_millis(300),
             address: "127.0.0.1".to_string(),
             port: 5000 + id as u16,
             cluster_nodes: cluster_nodes.clone(),
@@ -57,12 +57,12 @@ async fn client_request(client_id: u32, data: u32) {
 
     let request_data = vec![client_id.to_be_bytes().to_vec(), 1u32.to_be_bytes().to_vec(), 6u32.to_be_bytes().to_vec(), data.to_be_bytes().to_vec()].concat();
 
-    if let Err(e) = network_manager.send(&request_data).await {
+    if let Err(e) = network_manager.send(server_address, "5001", &request_data).await {
         eprintln!("Failed to send client request: {}", e);
     }
 
     // sleep for a while to allow the server to process the request
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let response = network_manager.receive().await.unwrap();
     println!("Received response: {:?}", response);

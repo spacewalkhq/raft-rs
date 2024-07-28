@@ -128,6 +128,9 @@ impl Server {
             return;
         }
 
+        self.state.match_index = vec![0; self.peers.len()+1];
+        self.state.next_index = vec![0; self.peers.len()+1];
+
         if self.state.current_term == 0 {
             self.state.current_term += 1;
             self.state.current_term = self.state.current_term;
@@ -169,10 +172,12 @@ impl Server {
         }).collect();
         let _ = self.network_manager.broadcast(&data, addresses);
 
-        // Wait for election timeout
         let now = Instant::now();
         while now.duration_since(self.state.last_heartbeat) < self.state.election_timeout {
             self.receive_rpc().await;
+            if self.is_quorum(self.state.votes_received.len() as u32) {
+                break;
+            }
         }
 
         if self.is_quorum(self.state.votes_received.len() as u32) {
@@ -185,48 +190,72 @@ impl Server {
     }
 
     async fn leader(&mut self) {
-        loop {
-            if self.state.state != RaftState::Leader {
-                return;
+        if self.state.state != RaftState::Leader {
+            return;
+        }
+
+        let now = Instant::now();
+        if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
+            self.state.state = RaftState::Candidate;
+            return;
+        }
+
+        let heartbeat_data = self.prepare_heartbeat();
+        let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
+            self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
+        }).collect();
+
+        if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
+            eprintln!("Failed to send heartbeats: {}", e);
+        }
+
+        self.receive_rpc().await;
+
+        // TODO: Write coalescing with debouncing
+        // Move this to a separate thread to avoid blocking the main loop
+        if !self.write_buffer.is_empty() {
+            let append_batch = self.prepare_append_batch(self.id, self.state.current_term, self.state.previous_log_index, self.state.commit_index, self.write_buffer.clone());
+
+            for entry in self.write_buffer.clone() {
+                let data = [2u32.to_be_bytes(), entry.data.to_be_bytes()].concat();
+                self.append_log(self.id, self.state.current_term, &data).await;
             }
 
-            let now = Instant::now();
-            if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
-                self.state.state = RaftState::Candidate;
-                return;
-            }
-
-            let heartbeat_data = self.prepare_heartbeat();
             let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
                 self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
             }).collect();
-
-            if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
-                eprintln!("Failed to send heartbeats: {}", e);
+            if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
+                eprintln!("Failed to send append batch: {}", e);
             }
 
-            self.receive_rpc().await;
-
-            // TODO: Write coalescing with debouncing
-            // Move this to a separate thread to avoid blocking the main loop
-            if !self.write_buffer.is_empty() {
-                let append_batch = self.prepare_append_batch(self.id, self.state.current_term, self.state.previous_log_index, self.state.commit_index, self.write_buffer.clone());
-
-                for entry in self.write_buffer.clone() {
-                    let data = [2u32.to_be_bytes(), entry.data.to_be_bytes()].concat();
-                    self.append_log(self.id, self.state.current_term, &data).await;
+            // Wait for consensus
+            println!("Waiting for consensus");
+            let commit_index = self.state.commit_index;
+            println!("commit_index: {}", commit_index);
+            // Wait for consensus until term changes
+            while self.state.commit_index == commit_index {
+                println!("inside while loop {}", self.state.current_term);
+                if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
+                    println!("Election timeout");
+                    self.state.state = RaftState::Candidate;
+                    return;
                 }
-
-                let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
-                    self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
-                }).collect();
-                if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
-                    eprintln!("Failed to send append batch: {}", e);
-                }
-                self.write_buffer.clear();
-                self.debounce_timer = Instant::now();            
+                self.receive_rpc().await;
+                break;
             }
+            println!("Consensus reached");
+            println!("Current term: {}", self.state.current_term);
+            println!("commit index: {}", self.state.commit_index);
+            self.write_buffer.clear();
+            self.debounce_timer = Instant::now();            
         }
+
+        // broadcast on your own address so client can get response
+        let response_data = [1u32.to_be_bytes()].concat();
+        if let Err(e) = self.network_manager.send(self.config.address.as_str(), self.config.port.to_string().as_str(), &response_data).await {
+            eprintln!("Failed to send client response: {}", e);
+        }
+
     }
     
     async fn receive_rpc(&mut self) {
@@ -252,8 +281,6 @@ impl Server {
     }
 
     async fn handle_rpc(&mut self, data: Vec<u8>) {
-        // Handle RPC data
-        let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let message_type: u32 = u32::from_be_bytes(data[8..12].try_into().unwrap());
 
@@ -261,7 +288,6 @@ impl Server {
             return;
         }
 
-        // covert message_type to enum
         let message_type = match message_type {
             0 => MesageType::RequestVote,
             1 => MesageType::RequestVoteResponse,
@@ -275,10 +301,10 @@ impl Server {
         
         match message_type {
             MesageType::RequestVote => {
-                self.handle_request_vote(peer_id).await;
+                self.handle_request_vote(&data).await;
             }
             MesageType::RequestVoteResponse => {
-                self.handle_request_vote_response(peer_id).await;
+                self.handle_request_vote_response(&data).await;
             }
             MesageType::AppendEntries => {
                 self.handle_append_entries(data).await;
@@ -314,28 +340,49 @@ impl Server {
         self.write_buffer.push(entry);
     }
 
-    async fn handle_request_vote(&mut self, peer_id: u32) {
+    async fn handle_request_vote(&mut self, data: &[u8]) {
         // Only Follower can vote, because Candidate voted for itself
         if self.state.state != RaftState::Follower {
             return;
         }
 
-        self.state.voted_for = Some(peer_id);
+        let candidate_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let candidate_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+
+        if candidate_term < self.state.current_term {
+            return;
+        }
+
+        self.state.voted_for = Some(candidate_id);
+
+        // get candidate address from config
+        let candidate_address = self.config.id_to_address_mapping.get(&candidate_id);
+        if candidate_address.is_none() {
+            // no dynamic membership changes
+            println!("Candidate address not found");
+            return;
+        }
+        let candidate_ip = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[0];
+        let candidate_port = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[1];
 
         let data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 1u32.to_be_bytes()].concat();
-        let voteresponse = self.network_manager.send(&data).await;
+        let data = [data, 1u32.to_be_bytes().to_vec()].concat();
+
+        let voteresponse = self.network_manager.send(candidate_ip, candidate_port, &data).await;
         if let Err(e) = voteresponse {
             eprintln!("Failed to send vote response: {}", e);
         }
     }
 
-    async fn handle_request_vote_response(&mut self, peer_id: u32) {
+    async fn handle_request_vote_response(&mut self, data: &[u8]) {
         if self.state.state != RaftState::Candidate {
             return;
         }
 
+        let voter_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let vote_granted = u32::from_be_bytes(data[8..12].try_into().unwrap()) == 1;
 
-        self.state.votes_received.insert(peer_id, true);
+        self.state.votes_received.insert(voter_id, vote_granted);
     }
 
     async fn handle_append_entries(&mut self, data: Vec<u8>) {
@@ -343,7 +390,6 @@ impl Server {
             return;
         }
 
-        // get data from the message
         let id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let leader_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
 
@@ -371,34 +417,65 @@ impl Server {
         }
 
         let data = &data[20..];
-        self.append_log(id, leader_term, data).await;
+        let _ = self.append_log(id, leader_term, data).await;
+
+        self.state.current_term += 1; // increment term on successful append for follower
+        
+        let response = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 3u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
+        let leader_address = self.config.id_to_address_mapping.get(&id).unwrap();
+        let leader_ip = leader_address.split(":").collect::<Vec<&str>>()[0];
+        let leader_port = leader_address.split(":").collect::<Vec<&str>>()[1];
+        println!("Sending append entries response to leader: {}", id);
+        if let Err(e) = self.network_manager.send(leader_ip, leader_port, &response).await {
+            eprintln!("Failed to send append entries response: {}", e);
+        }
+
     }
 
     async fn handle_append_entries_response(&mut self, data: &[u8]) {
-        let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        if self.state.state != RaftState::Leader {
+            return;
+        }
+        
+        let sender_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
-        let success = u32::from_be_bytes(data[8..12].try_into().unwrap()) == 1;
+        let success = u32::from_be_bytes(data[12..16].try_into().unwrap()) == 1;
+        println!("Append entries response from peer: {}", sender_id);
+        println!("Success: {}", success);
+        println!("Term: {}", term);
+        println!("Current term: {}", self.state.current_term);
 
-        if term < self.state.current_term {
+        if term > self.state.current_term {
             return;
         }
 
-        self.state.current_term = term;
-
         if success {
+            // check if you got a quorum
             let last_log_index = self.state.previous_log_index;
-            self.state.match_index[peer_id as usize - 1] = last_log_index;
-            self.state.next_index[peer_id as usize - 1] = last_log_index + 1;
+            self.state.match_index[sender_id as usize - 1] = last_log_index;
+            self.state.next_index[sender_id as usize - 1] = last_log_index + 1;
 
             let mut match_indices = self.state.match_index.clone();
             match_indices.sort();
             let quorum_index = match_indices[self.peers.len() / 2];
-
-            if quorum_index > self.state.commit_index {
+            println!("Quorum index: {}", quorum_index);
+            println!("Match indices: {:?}", self.state.match_index);
+            println!("Next indices: {:?}", self.state.next_index);
+            println!("commit index: {}", self.state.commit_index);
+            if quorum_index >= self.state.commit_index {
                 self.state.commit_index = quorum_index;
+                // return client response
+                let response_data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 10u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
+                if let Err(e) = self.network_manager.send(self.config.address.as_str(), self.config.port.to_string().as_str(), &response_data).await {
+                    eprintln!("Failed to send client response: {}", e);
+                }
+                println!("match index: {:?}", self.state.match_index);
+                println!("commit index: {}", self.state.commit_index);
+                println!("quorum index: {}", quorum_index);
+                println!("Client response sent");
             }
         } else {
-            self.state.next_index[peer_id as usize - 1] -= 1;
+            self.state.next_index[sender_id as usize - 1] -= 1;
         }
     }
 
