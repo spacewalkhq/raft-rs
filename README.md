@@ -7,6 +7,7 @@ An understandable, fast, scalable and production-ready Raft implementation.
 - [x] Scalable
 - [x] Zero-Copy support
 - [x] Default Leader 
+- [x] Leadership preference
 
 ## To-Do
 - [ ] io_uring support
@@ -16,7 +17,6 @@ An understandable, fast, scalable and production-ready Raft implementation.
 - [ ] Enhance documentation
 - [ ] Implement dynamic cluster membership changes
 - [ ] Implement log compaction
-- [ ] Implement snapshotting
 - [ ] Deterministic Simulation Testing
 - [ ] Benchmarking 
 

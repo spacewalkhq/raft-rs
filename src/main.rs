@@ -11,16 +11,18 @@ use tokio::time::Duration;
 #[tokio::main]
 async fn main() {
     // Define cluster configuration
-    let cluster_nodes = vec![1, 2, 3];
+    let cluster_nodes = vec![1, 2, 3, 4, 5];
     let mut id_to_address_mapping = HashMap::new();
     id_to_address_mapping.insert(1, "127.0.0.1:5001".to_string());
     id_to_address_mapping.insert(2, "127.0.0.1:5002".to_string());
     id_to_address_mapping.insert(3, "127.0.0.1:5003".to_string());
+    id_to_address_mapping.insert(4, "127.0.0.1:5004".to_string());
+    id_to_address_mapping.insert(5, "127.0.0.1:5005".to_string());
 
     // Create server configs
     let configs: Vec<_> = cluster_nodes.iter().map(|&id| {
         ServerConfig {
-            election_timeout: Duration::from_millis(300),
+            election_timeout: Duration::from_secs(5),
             address: "127.0.0.1".to_string(),
             port: 5000 + id as u16,
             cluster_nodes: cluster_nodes.clone(),

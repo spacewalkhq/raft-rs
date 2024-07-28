@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
+use tokio::time::sleep;
 use crate::network::{NetworkLayer, TCPManager};
 use crate::storage::{LocalStorage, Storage};
 
@@ -89,7 +90,7 @@ impl Server {
             previous_log_index: 0,
             next_index: vec![0; peers.len()],
             match_index: vec![0; peers.len()],
-            election_timeout: config.election_timeout,
+            election_timeout: config.election_timeout + Duration::from_secs(2*id as u64), 
             last_heartbeat: Instant::now(),
             votes_received: HashMap::new(),
         };
@@ -101,7 +102,6 @@ impl Server {
             peers,
             config,
             network_manager,
-            // Initialize write buffer and debounce timer
             write_buffer: Vec::new(),
             debounce_timer: Instant::now(),
             storage: LocalStorage::new(format!("server_{}.log", id)),
@@ -131,6 +131,8 @@ impl Server {
         self.state.match_index = vec![0; self.peers.len()+1];
         self.state.next_index = vec![0; self.peers.len()+1];
 
+        println!("Server {} is a follower", self.id);
+        // default leader
         if self.state.current_term == 0 {
             self.state.current_term += 1;
             self.state.current_term = self.state.current_term;
@@ -145,18 +147,29 @@ impl Server {
             }
         }
 
-        let now = Instant::now();
-        if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
-            self.state.state = RaftState::Candidate;
-            return;
+        let timeout_duration = self.state.election_timeout;
+        
+        let timeout_future = async {
+            sleep(timeout_duration).await;
+        };
+
+        let rpc_future = self.receive_rpc();
+
+        tokio::select! {
+            _ = timeout_future => {
+                self.state.state = RaftState::Candidate;
+            }
+            _ = rpc_future => {
+                return;
+            }
         }
-        self.receive_rpc().await;
     }
 
     async fn candidate(&mut self) {
         if self.state.state != RaftState::Candidate {
             return;
         }
+        println!("Server {} is a candidate", self.id);
 
         self.state.current_term += 1;
         self.state.current_term = self.state.current_term;
@@ -164,37 +177,58 @@ impl Server {
         // Vote for self
         self.state.voted_for = Some(self.id);
         self.state.votes_received.insert(self.id, true);
+        self.state.last_heartbeat = Instant::now(); // reset election timeout
 
         // TODO: Send RequestVote RPCs with leadership preferences
         let data = self.prepare_request_vote(self.id, self.state.current_term);
         let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
             self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
         }).collect();
-        let _ = self.network_manager.broadcast(&data, addresses);
+        let _ = self.network_manager.broadcast(&data, addresses).await;
 
-        let now = Instant::now();
-        while now.duration_since(self.state.last_heartbeat) < self.state.election_timeout {
-            self.receive_rpc().await;
-            if self.is_quorum(self.state.votes_received.len() as u32) {
-                break;
+        let timeout_duration = self.state.election_timeout;
+
+        
+        let timeout_future = async {
+            sleep(timeout_duration).await;
+        };
+
+        let rpc_future = self.receive_rpc();
+
+        tokio::select! {
+            _ = timeout_future => {
+                if Instant::now().duration_since(self.state.last_heartbeat) >= timeout_duration {
+                    self.state.state = RaftState::Follower;
+                    self.state.votes_received.clear();
+                }
+            }
+            _ = rpc_future => {
+                if self.is_quorum(self.state.votes_received.len() as u32) {
+                    println!("Quorum reached");
+                    self.state.state = RaftState::Leader;
+                }
             }
         }
 
         if self.is_quorum(self.state.votes_received.len() as u32) {
             self.state.state = RaftState::Leader;
+            self.state.current_term += 1;
         } else {
-            self.state.votes_received.clear();
             self.state.state = RaftState::Follower;
+            self.state.votes_received.clear();
         }
-        
     }
 
     async fn leader(&mut self) {
         if self.state.state != RaftState::Leader {
             return;
         }
+        println!("Server {} is the leader", self.id);
+        println!("Leader state: {:?}", self.state);
 
+        // Announce leadership
         let now = Instant::now();
+        self.state.last_heartbeat = now;
         if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
             self.state.state = RaftState::Candidate;
             return;
@@ -229,12 +263,8 @@ impl Server {
             }
 
             // Wait for consensus
-            println!("Waiting for consensus");
             let commit_index = self.state.commit_index;
-            println!("commit_index: {}", commit_index);
-            // Wait for consensus until term changes
             while self.state.commit_index == commit_index {
-                println!("inside while loop {}", self.state.current_term);
                 if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
                     println!("Election timeout");
                     self.state.state = RaftState::Candidate;
@@ -244,18 +274,11 @@ impl Server {
                 break;
             }
             println!("Consensus reached");
-            println!("Current term: {}", self.state.current_term);
-            println!("commit index: {}", self.state.commit_index);
             self.write_buffer.clear();
             self.debounce_timer = Instant::now();            
         }
 
-        // broadcast on your own address so client can get response
-        let response_data = [1u32.to_be_bytes()].concat();
-        if let Err(e) = self.network_manager.send(self.config.address.as_str(), self.config.port.to_string().as_str(), &response_data).await {
-            eprintln!("Failed to send client response: {}", e);
-        }
-
+        println!("Leader state: {:?}", self.state);
     }
     
     async fn receive_rpc(&mut self) {
@@ -342,18 +365,19 @@ impl Server {
 
     async fn handle_request_vote(&mut self, data: &[u8]) {
         // Only Follower can vote, because Candidate voted for itself
+        let candidate_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let candidate_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+
         if self.state.state != RaftState::Follower {
             return;
         }
-
-        let candidate_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
-        let candidate_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
 
         if candidate_term < self.state.current_term {
             return;
         }
 
         self.state.voted_for = Some(candidate_id);
+        self.state.current_term = candidate_term;
 
         // get candidate address from config
         let candidate_address = self.config.id_to_address_mapping.get(&candidate_id);
@@ -365,8 +389,7 @@ impl Server {
         let candidate_ip = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[0];
         let candidate_port = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[1];
 
-        let data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 1u32.to_be_bytes()].concat();
-        let data = [data, 1u32.to_be_bytes().to_vec()].concat();
+        let data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 1u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
 
         let voteresponse = self.network_manager.send(candidate_ip, candidate_port, &data).await;
         if let Err(e) = voteresponse {
@@ -380,15 +403,25 @@ impl Server {
         }
 
         let voter_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let vote_granted = u32::from_be_bytes(data[8..12].try_into().unwrap()) == 1;
 
+        // if follower and your term and candidate term are same, and your id is less than candidate id, vote for candidate
+        // leader preference
+        if term >= self.state.current_term && self.id > voter_id && self.state.state == RaftState::Candidate {
+            self.state.state = RaftState::Follower;
+        }
+
         self.state.votes_received.insert(voter_id, vote_granted);
+        println!("Votes received: {:?}", self.state.votes_received);
     }
 
     async fn handle_append_entries(&mut self, data: Vec<u8>) {
         if self.state.state != RaftState::Follower {
             return;
         }
+
+        self.state.last_heartbeat = Instant::now();
 
         let id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let leader_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
@@ -458,10 +491,6 @@ impl Server {
             let mut match_indices = self.state.match_index.clone();
             match_indices.sort();
             let quorum_index = match_indices[self.peers.len() / 2];
-            println!("Quorum index: {}", quorum_index);
-            println!("Match indices: {:?}", self.state.match_index);
-            println!("Next indices: {:?}", self.state.next_index);
-            println!("commit index: {}", self.state.commit_index);
             if quorum_index >= self.state.commit_index {
                 self.state.commit_index = quorum_index;
                 // return client response
@@ -469,10 +498,7 @@ impl Server {
                 if let Err(e) = self.network_manager.send(self.config.address.as_str(), self.config.port.to_string().as_str(), &response_data).await {
                     eprintln!("Failed to send client response: {}", e);
                 }
-                println!("match index: {:?}", self.state.match_index);
-                println!("commit index: {}", self.state.commit_index);
-                println!("quorum index: {}", quorum_index);
-                println!("Client response sent");
+                println!("Quorum decision reached to commit index: {}", self.state.commit_index);
             }
         } else {
             self.state.next_index[sender_id as usize - 1] -= 1;
@@ -480,7 +506,7 @@ impl Server {
     }
 
     async fn handle_heartbeat(&mut self) {
-        if self.state.state != RaftState::Follower {
+        if self.state.state != RaftState::Follower || self.state.state != RaftState::Candidate {
             return;
         }
         self.state.last_heartbeat = Instant::now();
