@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use serde::{Serialize, Deserialize};
 use crate::network::{NetworkLayer, TCPManager};
+use crate::storage::{LocalStorage, Storage};
 
 #[derive(Debug, Clone, PartialEq)]
 enum RaftState {
@@ -37,15 +39,17 @@ struct ServerState {
     leadership_preferences: HashMap<u32, u32>, // key: follower_id, value: preference_score
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum LogCommand {
     Noop,
     Set,
     Delete,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LogEntry {
+    leader_id: u32,
+    server_id: u32,
     term: u32,
     index: u32,
     command: LogCommand,
@@ -54,14 +58,14 @@ struct LogEntry {
 
 #[derive(Debug)]
 pub struct ServerConfig {
-    election_timeout: Duration,
-    address: String,
-    port: u16,
-    cluster_nodes: Vec<u32>,
-    id_to_address_mapping: HashMap<u32, String>,
+    pub election_timeout: Duration,
+    pub address: String,
+    pub port: u16,
+    pub cluster_nodes: Vec<u32>,
+    pub id_to_address_mapping: HashMap<u32, String>,
     // Include default leader and leadership preferences
-    default_leader: Option<u32>,
-    leadership_preferences: HashMap<u32, u32>,
+    pub default_leader: Option<u32>,
+    pub leadership_preferences: HashMap<u32, u32>,
 }
 
 pub struct Server {
@@ -73,6 +77,7 @@ pub struct Server {
     // Add write buffer and debounce timer
     write_buffer: Vec<LogEntry>,
     debounce_timer: Instant,
+    storage: LocalStorage,
 }
 
 impl Server {
@@ -104,6 +109,7 @@ impl Server {
             // Initialize write buffer and debounce timer
             write_buffer: Vec::new(),
             debounce_timer: Instant::now(),
+            storage: LocalStorage::new(format!("server_{}.log", id)),
         }
     }
 
@@ -127,6 +133,21 @@ impl Server {
             return;
         }
 
+        // if current term is 0, increment term and and assume leadership to default leader
+        if self.state.current_term == 0 {
+            self.state.current_term += 1;
+            self.state.current_term = self.state.current_term;
+            match self.config.default_leader {
+                Some(leader_id) => {
+                    if self.id == leader_id {
+                        self.state.state = RaftState::Leader;
+                        return;
+                    }
+                }
+                None => {}
+            }
+        }
+
         let now = Instant::now();
         if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
             self.state.state = RaftState::Candidate;
@@ -138,22 +159,6 @@ impl Server {
     async fn candidate(&mut self) {
         if self.state.state != RaftState::Candidate {
             return;
-        }
-        
-        // if current term is 0, increment term and and assume leadership to default leader
-        if self.state.current_term == 0 {
-            self.state.current_term += 1;
-            self.state.current_term = self.state.current_term;
-            
-            match self.config.default_leader {
-                Some(leader_id) => {
-                    if self.id == leader_id {
-                        self.state.state = RaftState::Leader;
-                        return;
-                    }
-                }
-                None => {}
-            }
         }
 
         self.state.current_term += 1;
@@ -206,28 +211,21 @@ impl Server {
                 eprintln!("Failed to send heartbeats: {}", e);
             }
 
-            // Write coalescing with debouncing
-            if !self.write_buffer.is_empty() && Instant::now().duration_since(self.debounce_timer) > Duration::from_millis(100) {
-                // Batch write to disk
-                // TODO: Implement batch write to disk
+            self.receive_rpc().await;
 
-                // Broadcast batched logs to all peers
-                let prev_log_index = self.state.log.len() as u32;
-                let data = self.prepare_append_batch(self.id, self.state.current_term, prev_log_index, self.state.commit_index, self.write_buffer.clone());
+            // TODO: Write coalescing with debouncing
+            println!("write buffer: {:?}", self.write_buffer);
+            if !self.write_buffer.is_empty() {
+                println!("Preparing write buffer");
+                let data = self.prepare_append_batch(self.id, self.state.current_term, 0, 0, self.write_buffer.clone());
                 let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
                     self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
                 }).collect();
-
-                if let Err(e) = self.network_manager.broadcast(&data, addresses).await {
-                    eprintln!("Failed to broadcast append entries: {}", e);
-                }
-
-                // Clear write buffer and reset debounce timer
+                println!("Sending write buffer to peers: {:?}, data: {:?}", addresses, data);
+                let _ = self.network_manager.broadcast(&data, addresses).await;
                 self.write_buffer.clear();
                 self.debounce_timer = Instant::now();
             }
-
-            self.receive_rpc().await;
         }
     }
     
@@ -251,22 +249,17 @@ impl Server {
     }
 
     fn prepare_heartbeat(&self) -> Vec<u8> {
-        [self.id.to_be_bytes(), self.state.current_term.to_be_bytes()].concat()
+        [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 4u32.to_be_bytes()].concat()
     }
 
     async fn handle_rpc(&mut self, data: Vec<u8>) {
         // Handle RPC data
         let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
-        let message_type = u32::from_be_bytes(data[8..12].try_into().unwrap());
+        let message_type: u32 = u32::from_be_bytes(data[8..12].try_into().unwrap());
 
         if term < self.state.current_term {
             return;
-        }
-
-        if term > self.state.current_term {
-            self.state.current_term = term;
-            self.state.state = RaftState::Follower;
         }
 
         // covert message_type to enum
@@ -278,7 +271,7 @@ impl Server {
             4 => MesageType::Heartbeat,
             5 => MesageType::HeartbeatResponse,
             6 => MesageType::ClientRequest,
-            _ => panic!("Invalid message type"),
+            _ => return,
         };
         
         match message_type {
@@ -307,11 +300,16 @@ impl Server {
     }
 
     async fn handle_client_request(&mut self, data: Vec<u8>) {
+        if self.state.state != RaftState::Leader {
+            return;
+        }
+
         let term = self.state.current_term;
         let index = self.state.log.len() as u32;
         let command = LogCommand::Set;
         let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
-        let entry = LogEntry { term, index, command, data };
+        let entry = LogEntry { leader_id: self.id, server_id: self.id, term, index, command, data };
+        println!("Received client request: {:?}", entry);
         self.write_buffer.push(entry);
     }
 
@@ -320,7 +318,6 @@ impl Server {
         if self.state.state != RaftState::Follower {
             return;
         }
-
 
         self.state.voted_for = Some(peer_id);
 
@@ -340,29 +337,30 @@ impl Server {
         self.state.votes_received.insert(peer_id, true);
     }
 
-    async fn handle_append_entries(&mut self, batch_data: Vec<u8>) {
+    async fn handle_append_entries(&mut self, data: Vec<u8>) {
         if self.state.state != RaftState::Follower {
             return;
         }
 
 
         // get data from the message
-        let id = u32::from_be_bytes(batch_data[0..4].try_into().unwrap());
-        let leader_term = u32::from_be_bytes(batch_data[4..8].try_into().unwrap());
+        let id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let leader_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
 
         if leader_term < self.state.current_term {
             return;
         }
 
-        let message_type = u32::from_be_bytes(batch_data[8..12].try_into().unwrap());
+        let message_type = u32::from_be_bytes(data[8..12].try_into().unwrap());
         if message_type != 2 {
             return;
         }
         
-        let prev_log_index = u32::from_be_bytes(batch_data[12..16].try_into().unwrap());
-        let commit_index = u32::from_be_bytes(batch_data[16..20].try_into().unwrap());
-        let data = &batch_data[20..];
-        self.append_log(id, data).await;
+        let prev_log_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
+        // TODO: Implement log compaction
+        // let commit_index = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        let data = &data[20..];
+        self.append_log(id, leader_term, prev_log_index, data).await;
     }
 
     async fn handle_append_entries_response(&mut self) {
@@ -391,13 +389,49 @@ impl Server {
         self.state.last_heartbeat = Instant::now();
     }
 
-    async fn append_log(&mut self, id:u32, data: &[u8]) {
-        // Append log entries to disk
+    async fn append_log(&mut self, id: u32, term: u32, prev_log_index: u32, data: &[u8]) {
         println!("Appending logs to disk from peer: {}", id);
         println!("Data: {:?}", data);
-        // Logic to write logs to disk
-        // convert data to LogEntry and append to log
 
+        let log_entries = self.deserialize_log_entries(id, term, prev_log_index, data);
+
+        for entry in log_entries {
+            self.state.log.push(entry.clone());
+            let serialized_entry = bincode::serialize(&entry).unwrap();
+            if let Err(e) = self.storage.store(&serialized_entry).await {
+                eprintln!("Failed to store log entry to disk: {}", e);
+            }
+        }
+
+        println!("Log after appending: {:?}", self.state.log);
+    }
+
+    fn deserialize_log_entries(&self, sender_id: u32, term: u32, prev_log_index: u32, data: &[u8]) -> Vec<LogEntry> {
+        let mut entries = Vec::new();
+        let mut index = 0;
+        while index < data.len() {
+            let command_type = u32::from_be_bytes(data[index..index + 4].try_into().unwrap());
+            index += 8;
+            let command = match command_type {
+                0 => LogCommand::Noop,
+                1 => LogCommand::Set,
+                2 => LogCommand::Delete,
+                _ => panic!("Invalid command type"),
+            };
+            let entry_data = u32::from_be_bytes(data[index..index + 4].try_into().unwrap());
+            index += 4;
+
+            let entry = LogEntry {
+                leader_id: sender_id,
+                server_id: self.id,
+                term,
+                index: prev_log_index+1,
+                command,
+                data: entry_data,
+            };
+            entries.push(entry);
+        }
+        entries
     }
 
     fn is_quorum(&self, votes: u32) -> bool {

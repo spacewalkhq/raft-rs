@@ -72,7 +72,8 @@ impl NetworkLayer for TCPManager {
 
     async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
         let futures = addresses.into_iter().map(|address| {
-            let addr: SocketAddr = format!("{}:{}", address, self.port).parse().unwrap();
+            let address = address.split(":").collect::<Vec<&str>>();
+            let addr: SocketAddr = format!("{}:{}", address[0], address[1]).parse().unwrap();
             Self::async_send(data, addr)
         });
         join_all(futures).await.into_iter().collect::<Result<_, _>>()?;
