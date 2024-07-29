@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
 use tokio::time::sleep;
@@ -21,6 +21,7 @@ enum MesageType {
     Heartbeat,
     HeartbeatResponse,
     ClientRequest,
+    ClientResponse,
 }
 
 #[derive(Debug)]
@@ -28,7 +29,7 @@ struct ServerState {
     current_term: u32,
     state: RaftState,
     voted_for: Option<u32>,
-    log: Vec<LogEntry>,
+    log: VecDeque<LogEntry>,
     commit_index: u32,
     previous_log_index: u32, 
     next_index: Vec<u32>,
@@ -85,7 +86,7 @@ impl Server {
             current_term: 0,
             state: RaftState::Follower,
             voted_for: None,
-            log: Vec::new(),
+            log: VecDeque::new(),
             commit_index: 0,
             previous_log_index: 0,
             next_index: vec![0; peers.len()],
@@ -128,6 +129,15 @@ impl Server {
             return;
         }
 
+        let log_byte = self.storage.retrieve().await;
+        if let Ok(log) = log_byte {
+            let log_entries: Vec<LogEntry> = bincode::deserialize(&log).unwrap();
+            self.state.log = VecDeque::from(log_entries);
+            println!("Log after reading from disk: {:?}", self.state.log);
+        } else {
+            println!("No log entries found on disk");
+        }
+
         self.state.match_index = vec![0; self.peers.len()+1];
         self.state.next_index = vec![0; self.peers.len()+1];
 
@@ -146,21 +156,23 @@ impl Server {
                 None => {}
             }
         }
+        loop {
+            let timeout_duration = self.state.election_timeout;
+            
+            let timeout_future = async {
+                sleep(timeout_duration).await;
+            };
 
-        let timeout_duration = self.state.election_timeout;
-        
-        let timeout_future = async {
-            sleep(timeout_duration).await;
-        };
+            let rpc_future = self.receive_rpc();
 
-        let rpc_future = self.receive_rpc();
-
-        tokio::select! {
-            _ = timeout_future => {
-                self.state.state = RaftState::Candidate;
-            }
-            _ = rpc_future => {
-                return;
+            tokio::select! {
+                _ = timeout_future => {
+                    self.state.state = RaftState::Candidate;
+                    self.state.last_heartbeat = Instant::now();
+                    break
+                }
+                _ = rpc_future => {
+                }
             }
         }
     }
@@ -170,6 +182,7 @@ impl Server {
             return;
         }
         println!("Server {} is a candidate", self.id);
+        self.state.last_heartbeat = Instant::now(); // reset election timeout
 
         self.state.current_term += 1;
         self.state.current_term = self.state.current_term;
@@ -177,7 +190,6 @@ impl Server {
         // Vote for self
         self.state.voted_for = Some(self.id);
         self.state.votes_received.insert(self.id, true);
-        self.state.last_heartbeat = Instant::now(); // reset election timeout
 
         // TODO: Send RequestVote RPCs with leadership preferences
         let data = self.prepare_request_vote(self.id, self.state.current_term);
@@ -186,32 +198,34 @@ impl Server {
         }).collect();
         let _ = self.network_manager.broadcast(&data, addresses).await;
 
-        let timeout_duration = self.state.election_timeout;
+        loop {
+            let timeout_duration = self.state.election_timeout;
 
-        
-        let timeout_future = async {
-            sleep(timeout_duration).await;
-        };
+            let timeout_future = async {
+                sleep(timeout_duration).await;
+            };
 
-        let rpc_future = self.receive_rpc();
-
-        tokio::select! {
-            _ = timeout_future => {
-                if Instant::now().duration_since(self.state.last_heartbeat) >= timeout_duration {
-                    self.state.state = RaftState::Follower;
-                    self.state.votes_received.clear();
+            let rpc_future = self.receive_rpc();
+            tokio::select! {
+                _ = timeout_future => {
+                    if Instant::now().duration_since(self.state.last_heartbeat) >= timeout_duration {
+                        println!("Election timeout");
+                        self.state.state = RaftState::Follower;
+                        self.state.votes_received.clear();
+                        break;
+                    }
                 }
-            }
-            _ = rpc_future => {
-                if self.is_quorum(self.state.votes_received.len() as u32) {
-                    println!("Quorum reached");
-                    self.state.state = RaftState::Leader;
+                _ = rpc_future => {
+                    if self.is_quorum(self.state.votes_received.len() as u32) {
+                        println!("Quorum reached");
+                        self.state.state = RaftState::Leader;
+                        break;
+                    }
                 }
             }
         }
 
-        if self.is_quorum(self.state.votes_received.len() as u32) {
-            self.state.state = RaftState::Leader;
+        if self.state.state == RaftState::Leader {
             self.state.current_term += 1;
         } else {
             self.state.state = RaftState::Follower;
@@ -226,59 +240,58 @@ impl Server {
         println!("Server {} is the leader", self.id);
         println!("Leader state: {:?}", self.state);
 
-        // Announce leadership
-        let now = Instant::now();
-        self.state.last_heartbeat = now;
-        if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
-            self.state.state = RaftState::Candidate;
-            return;
-        }
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_millis(300));
 
-        let heartbeat_data = self.prepare_heartbeat();
-        let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
-            self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
-        }).collect();
 
-        if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
-            eprintln!("Failed to send heartbeats: {}", e);
-        }
+        loop {
+            let rpc_future = self.receive_rpc();
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if self.state.state != RaftState::Leader {
+                        break;
+                    }
 
-        self.receive_rpc().await;
+                    let now = Instant::now();
+                    self.state.last_heartbeat = now;
+    
+                    let heartbeat_data = self.prepare_heartbeat();
+                    let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
+                        self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
+                    }).collect();
+    
+                    if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
+                        eprintln!("Failed to send heartbeats: {}", e);
+                    }
+                },
+                _ = rpc_future => {
+                    if self.state.state != RaftState::Leader {
+                        break;
+                    }
+                    // TODO: Write coalescing with debouncing
+                    // Move this to a separate thread to avoid blocking the main loop
+                    if !self.write_buffer.is_empty() {
+                        let append_batch = self.prepare_append_batch(self.id, self.state.current_term, self.state.previous_log_index, self.state.commit_index, self.write_buffer.clone());
 
-        // TODO: Write coalescing with debouncing
-        // Move this to a separate thread to avoid blocking the main loop
-        if !self.write_buffer.is_empty() {
-            let append_batch = self.prepare_append_batch(self.id, self.state.current_term, self.state.previous_log_index, self.state.commit_index, self.write_buffer.clone());
+                        for entry in self.write_buffer.clone() {
+                            let data = [1u32.to_be_bytes(), entry.data.to_be_bytes()].concat();
+                            self.append_log(self.id, self.state.current_term, &data).await;
+                        }
 
-            for entry in self.write_buffer.clone() {
-                let data = [2u32.to_be_bytes(), entry.data.to_be_bytes()].concat();
-                self.append_log(self.id, self.state.current_term, &data).await;
+                        let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
+                            self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
+                        }).collect();
+                        if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
+                            eprintln!("Failed to send append batch: {}", e);
+                        }
+
+                        self.write_buffer.clear();
+                        self.debounce_timer = Instant::now();            
+                    }
+
+                    println!("Leader state: {:?}", self.state);
+                },
             }
-
-            let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
-                self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
-            }).collect();
-            if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
-                eprintln!("Failed to send append batch: {}", e);
-            }
-
-            // Wait for consensus
-            let commit_index = self.state.commit_index;
-            while self.state.commit_index == commit_index {
-                if now.duration_since(self.state.last_heartbeat) > self.state.election_timeout {
-                    println!("Election timeout");
-                    self.state.state = RaftState::Candidate;
-                    return;
-                }
-                self.receive_rpc().await;
-                break;
-            }
-            println!("Consensus reached");
-            self.write_buffer.clear();
-            self.debounce_timer = Instant::now();            
         }
-
-        println!("Leader state: {:?}", self.state);
     }
     
     async fn receive_rpc(&mut self) {
@@ -307,7 +320,7 @@ impl Server {
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let message_type: u32 = u32::from_be_bytes(data[8..12].try_into().unwrap());
 
-        if term < self.state.current_term {
+        if term < self.state.current_term && message_type != 3 {
             return;
         }
 
@@ -319,6 +332,7 @@ impl Server {
             4 => MesageType::Heartbeat,
             5 => MesageType::HeartbeatResponse,
             6 => MesageType::ClientRequest,
+            7 => MesageType::ClientResponse,
             _ => return,
         };
         
@@ -343,6 +357,16 @@ impl Server {
             }
             MesageType::ClientRequest => {
                 self.handle_client_request(data).await;
+            }
+            MesageType::ClientResponse => {
+                // TODO: get implementation from user based on the application
+                println!("Received client response: {:?}", data);
+                let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
+                if data == 1 {
+                    println!("Consensus reached!");
+                } else {
+                    println!("Consensus not reached!");
+                }
             }
         }
     }
@@ -449,8 +473,10 @@ impl Server {
             return;
         }
 
-        let data = &data[20..];
-        let _ = self.append_log(id, leader_term, data).await;
+        let set_command = 1u32.to_be_bytes();
+        let data = [set_command.to_vec(), 42u32.to_be_bytes().to_vec()].concat();
+
+        let _ = self.append_log(id, leader_term, &data).await;
 
         self.state.current_term += 1; // increment term on successful append for follower
         
@@ -469,15 +495,13 @@ impl Server {
         if self.state.state != RaftState::Leader {
             return;
         }
-        
+
         let sender_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let success = u32::from_be_bytes(data[12..16].try_into().unwrap()) == 1;
-        println!("Append entries response from peer: {}", sender_id);
-        println!("Success: {}", success);
-        println!("Term: {}", term);
-        println!("Current term: {}", self.state.current_term);
 
+        println!("Append entries response from peer: {} with term: {} and success: {}", sender_id, term, success);
+        
         if term > self.state.current_term {
             return;
         }
@@ -494,7 +518,7 @@ impl Server {
             if quorum_index >= self.state.commit_index {
                 self.state.commit_index = quorum_index;
                 // return client response
-                let response_data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 10u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
+                let response_data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 7u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
                 if let Err(e) = self.network_manager.send(self.config.address.as_str(), self.config.port.to_string().as_str(), &response_data).await {
                     eprintln!("Failed to send client response: {}", e);
                 }
@@ -522,8 +546,13 @@ impl Server {
 
         let log_entries = self.deserialize_log_entries(id, term, data);
 
+        // Log Compaction
+        if self.state.log.len() > 50 {
+            self.state.log.truncate(25);
+        }
+
         for entry in log_entries {
-            self.state.log.push(entry.clone());
+            self.state.log.push_front(entry.clone());
             let serialized_entry = bincode::serialize(&entry).unwrap();
             if let Err(e) = self.storage.store(&serialized_entry).await {
                 eprintln!("Failed to store log entry to disk: {}", e);

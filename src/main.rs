@@ -44,7 +44,7 @@ async fn main() {
     }
 
     // Simulate a client request after some delay
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(20));
     client_request(1, 42 as u32).await;    
     thread::sleep(Duration::from_secs(2));
     // Join all server threads
@@ -57,7 +57,7 @@ async fn client_request(client_id: u32, data: u32) {
     let server_address = "127.0.0.1"; // Assuming server 1 is the leader
     let network_manager = TCPManager::new(server_address.to_string(), 5001);
 
-    let request_data = vec![client_id.to_be_bytes().to_vec(), 1u32.to_be_bytes().to_vec(), 6u32.to_be_bytes().to_vec(), data.to_be_bytes().to_vec()].concat();
+    let request_data = vec![client_id.to_be_bytes().to_vec(), 10u32.to_be_bytes().to_vec(), 6u32.to_be_bytes().to_vec(), data.to_be_bytes().to_vec()].concat();
 
     if let Err(e) = network_manager.send(server_address, "5001", &request_data).await {
         eprintln!("Failed to send client request: {}", e);
