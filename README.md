@@ -46,6 +46,10 @@ An understandable, fast, scalable and optimized Raft implementation.
    ```sh
    cargo run --example simple_run
    ```
+4. Release the project:
+   ```sh
+   cargo build --release
+   ```
 
 ## Contributing
 Contributions are welcome! If you have any ideas, suggestions, or issues, please feel free to open an issue or a pull request. We aim to make this project better with your help.
