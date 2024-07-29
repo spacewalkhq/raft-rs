@@ -2,6 +2,14 @@
 name = "raft_rs"
 version = "0.0.1"
 edition = "2021"
+authors = ["Vipul Vaibhaw <vaibhaw.vipul@example.com>"]
+description = "A Raft implementation by SpacewalkHq"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/spacewalkhq/raft-rs"
+homepage = "https://github.com/spacewalkhq/raft-rs"
+keywords = ["raft", "distributed-systems", "consensus"]
+categories = ["algorithms", "network-programming", "distributed-systems"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
