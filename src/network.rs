@@ -3,19 +3,28 @@
 // License : MIT License
 
 use async_trait::async_trait;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::net::SocketAddr;
-use std::error::Error;
 use futures::future::join_all;
-use tokio::sync::Mutex; 
+use std::error::Error;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
 #[async_trait]
 pub trait NetworkLayer: Send + Sync {
-    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn send(
+        &self,
+        address: &str,
+        port: &str,
+        data: &[u8],
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn receive(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
-    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn broadcast(
+        &self,
+        data: &[u8],
+        addresses: Vec<String>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn open(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn close(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
@@ -38,7 +47,10 @@ impl TCPManager {
         }
     }
 
-    async fn async_send(data: &[u8], address: SocketAddr) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn async_send(
+        data: &[u8],
+        address: SocketAddr,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut stream = TcpStream::connect(address).await?;
         stream.write_all(data).await?;
         Ok(())
@@ -60,7 +72,12 @@ impl TCPManager {
 
 #[async_trait]
 impl NetworkLayer for TCPManager {
-    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn send(
+        &self,
+        address: &str,
+        port: &str,
+        data: &[u8],
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let addr: SocketAddr = format!("{}:{}", address, port).parse()?;
         Self::async_send(data, addr).await?;
         Ok(())
@@ -70,13 +87,20 @@ impl NetworkLayer for TCPManager {
         self.handle_receive().await
     }
 
-    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn broadcast(
+        &self,
+        data: &[u8],
+        addresses: Vec<String>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let futures = addresses.into_iter().map(|address| {
             let address = address.split(":").collect::<Vec<&str>>();
             let addr: SocketAddr = format!("{}:{}", address[0], address[1]).parse().unwrap();
             Self::async_send(data, addr)
         });
-        join_all(futures).await.into_iter().collect::<Result<_, _>>()?;
+        join_all(futures)
+            .await
+            .into_iter()
+            .collect::<Result<_, _>>()?;
         Ok(())
     }
 

@@ -30,7 +30,9 @@ An understandable, fast, scalable and optimized Raft implementation.
 - [ ] Enhance documentation
 - [ ] Implement dynamic cluster membership changes
 - [ ] Deterministic Simulation Testing
-- [ ] Benchmarking 
+- [ ] Benchmarking
+- [ ] Update to the latest version of Rust and Dependencies 
+- [ ] Cargo clippy and cargo fmt integration
 
 
 ## How to Run the Project
@@ -42,7 +44,7 @@ An understandable, fast, scalable and optimized Raft implementation.
    ```
 3. Run the project:
    ```sh
-   cargo run
+   cargo run --example simple_run
    ```
 
 ## Contributing

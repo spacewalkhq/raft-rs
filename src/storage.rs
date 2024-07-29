@@ -59,32 +59,24 @@ impl Storage for LocalStorage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let data = data.to_vec();
         let storage = self.clone();
-        tokio::spawn(async move {
-            storage.store_async(&data).await
-        }).await??;
+        tokio::spawn(async move { storage.store_async(&data).await }).await??;
         Ok(())
     }
 
     async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         let storage = self.clone();
-        tokio::spawn(async move {
-            storage.retrieve_async().await
-        }).await?
+        tokio::spawn(async move { storage.retrieve_async().await }).await?
     }
 
     async fn compaction(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let storage = self.clone();
-        tokio::spawn(async move {
-            storage.compaction_async().await
-        }).await??;
+        tokio::spawn(async move { storage.compaction_async().await }).await??;
         Ok(())
     }
 
     async fn delete(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let storage = self.clone();
-        tokio::spawn(async move {
-            storage.delete_async().await
-        }).await??;
+        tokio::spawn(async move { storage.delete_async().await }).await??;
         Ok(())
     }
 }

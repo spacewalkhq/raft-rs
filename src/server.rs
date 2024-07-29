@@ -1,9 +1,9 @@
-use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
-use serde::{Serialize, Deserialize};
-use tokio::time::sleep;
 use crate::network::{NetworkLayer, TCPManager};
 use crate::storage::{LocalStorage, Storage};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
 
 #[derive(Debug, Clone, PartialEq)]
 enum RaftState {
@@ -31,7 +31,7 @@ struct ServerState {
     voted_for: Option<u32>,
     log: VecDeque<LogEntry>,
     commit_index: u32,
-    previous_log_index: u32, 
+    previous_log_index: u32,
     next_index: Vec<u32>,
     match_index: Vec<u32>,
     election_timeout: Duration,
@@ -81,7 +81,12 @@ pub struct Server {
 
 impl Server {
     pub fn new(id: u32, config: ServerConfig) -> Server {
-        let peers: Vec<u32> = config.cluster_nodes.iter().filter(|&&x| x != id).cloned().collect();
+        let peers: Vec<u32> = config
+            .cluster_nodes
+            .iter()
+            .filter(|&&x| x != id)
+            .cloned()
+            .collect();
         let state = ServerState {
             current_term: 0,
             state: RaftState::Follower,
@@ -91,7 +96,7 @@ impl Server {
             previous_log_index: 0,
             next_index: vec![0; peers.len()],
             match_index: vec![0; peers.len()],
-            election_timeout: config.election_timeout + Duration::from_secs(2*id as u64), 
+            election_timeout: config.election_timeout + Duration::from_secs(2 * id as u64),
             last_heartbeat: Instant::now(),
             votes_received: HashMap::new(),
         };
@@ -147,14 +152,13 @@ impl Server {
             println!("No log entries found on disk");
         }
 
-        self.state.match_index = vec![0; self.peers.len()+1];
-        self.state.next_index = vec![0; self.peers.len()+1];
+        self.state.match_index = vec![0; self.peers.len() + 1];
+        self.state.next_index = vec![0; self.peers.len() + 1];
 
         println!("Server {} is a follower", self.id);
         // default leader
         if self.state.current_term == 0 {
             self.state.current_term += 1;
-            self.state.current_term = self.state.current_term;
             match self.config.default_leader {
                 Some(leader_id) => {
                     if self.id == leader_id {
@@ -167,7 +171,7 @@ impl Server {
         }
         loop {
             let timeout_duration = self.state.election_timeout;
-            
+
             let timeout_future = async {
                 sleep(timeout_duration).await;
             };
@@ -194,7 +198,6 @@ impl Server {
         self.state.last_heartbeat = Instant::now(); // reset election timeout
 
         self.state.current_term += 1;
-        self.state.current_term = self.state.current_term;
 
         // Vote for self
         self.state.voted_for = Some(self.id);
@@ -202,9 +205,17 @@ impl Server {
 
         // TODO: Send RequestVote RPCs with leadership preferences
         let data = self.prepare_request_vote(self.id, self.state.current_term);
-        let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
-            self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
-        }).collect();
+        let addresses: Vec<String> = self
+            .peers
+            .iter()
+            .map(|peer_id| {
+                self.config
+                    .id_to_address_mapping
+                    .get(peer_id)
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
         let _ = self.network_manager.broadcast(&data, addresses).await;
 
         loop {
@@ -251,7 +262,6 @@ impl Server {
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_millis(300));
 
-
         loop {
             let rpc_future = self.receive_rpc();
             tokio::select! {
@@ -262,12 +272,12 @@ impl Server {
 
                     let now = Instant::now();
                     self.state.last_heartbeat = now;
-    
+
                     let heartbeat_data = self.prepare_heartbeat();
                     let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
                         self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
                     }).collect();
-    
+
                     if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
                         eprintln!("Failed to send heartbeats: {}", e);
                     }
@@ -294,7 +304,7 @@ impl Server {
                         }
 
                         self.write_buffer.clear();
-                        self.debounce_timer = Instant::now();            
+                        self.debounce_timer = Instant::now();
                     }
 
                     println!("Leader state: {:?}", self.state);
@@ -302,14 +312,28 @@ impl Server {
             }
         }
     }
-    
+
     async fn receive_rpc(&mut self) {
         let data = self.network_manager.receive().await.unwrap();
         self.handle_rpc(data).await;
     }
 
-    fn prepare_append_batch(&self, id: u32, term: u32, prev_log_index: u32, commit_index: u32, write_buffer: Vec<LogEntry>) -> Vec<u8> {
-        let mut data = [id.to_be_bytes(), term.to_be_bytes(), 2u32.to_be_bytes(), prev_log_index.to_be_bytes(), commit_index.to_be_bytes()].concat();
+    fn prepare_append_batch(
+        &self,
+        id: u32,
+        term: u32,
+        prev_log_index: u32,
+        commit_index: u32,
+        write_buffer: Vec<LogEntry>,
+    ) -> Vec<u8> {
+        let mut data = [
+            id.to_be_bytes(),
+            term.to_be_bytes(),
+            2u32.to_be_bytes(),
+            prev_log_index.to_be_bytes(),
+            commit_index.to_be_bytes(),
+        ]
+        .concat();
         for entry in write_buffer {
             let entry_data = [entry.term.to_be_bytes(), entry.data.to_be_bytes()].concat();
             data.extend_from_slice(&entry_data);
@@ -322,7 +346,12 @@ impl Server {
     }
 
     fn prepare_heartbeat(&self) -> Vec<u8> {
-        [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 4u32.to_be_bytes()].concat()
+        [
+            self.id.to_be_bytes(),
+            self.state.current_term.to_be_bytes(),
+            4u32.to_be_bytes(),
+        ]
+        .concat()
     }
 
     async fn handle_rpc(&mut self, data: Vec<u8>) {
@@ -344,7 +373,7 @@ impl Server {
             7 => MesageType::ClientResponse,
             _ => return,
         };
-        
+
         match message_type {
             MesageType::RequestVote => {
                 self.handle_request_vote(&data).await;
@@ -388,7 +417,13 @@ impl Server {
         let term = self.state.current_term;
         let command = LogCommand::Set;
         let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
-        let entry = LogEntry { leader_id: self.id, server_id: self.id, term, command, data };
+        let entry = LogEntry {
+            leader_id: self.id,
+            server_id: self.id,
+            term,
+            command,
+            data,
+        };
         println!("Received client request: {:?}", entry);
         self.write_buffer.push(entry.clone());
 
@@ -424,9 +459,18 @@ impl Server {
         let candidate_ip = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[0];
         let candidate_port = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[1];
 
-        let data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 1u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
+        let data = [
+            self.id.to_be_bytes(),
+            self.state.current_term.to_be_bytes(),
+            1u32.to_be_bytes(),
+            1u32.to_be_bytes(),
+        ]
+        .concat();
 
-        let voteresponse = self.network_manager.send(candidate_ip, candidate_port, &data).await;
+        let voteresponse = self
+            .network_manager
+            .send(candidate_ip, candidate_port, &data)
+            .await;
         if let Err(e) = voteresponse {
             eprintln!("Failed to send vote response: {}", e);
         }
@@ -443,7 +487,10 @@ impl Server {
 
         // if follower and your term and candidate term are same, and your id is less than candidate id, vote for candidate
         // leader preference
-        if term >= self.state.current_term && self.id > voter_id && self.state.state == RaftState::Candidate {
+        if term >= self.state.current_term
+            && self.id > voter_id
+            && self.state.state == RaftState::Candidate
+        {
             self.state.state = RaftState::Follower;
         }
 
@@ -469,7 +516,7 @@ impl Server {
         if message_type != 2 {
             return;
         }
-        
+
         let prev_log_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
         if prev_log_index > self.state.previous_log_index {
             self.state.previous_log_index = prev_log_index;
@@ -498,16 +545,25 @@ impl Server {
         let _ = self.persist_to_disk(id, &data).await;
 
         self.state.current_term += 1; // increment term on successful append for follower
-        
-        let response = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 3u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
+
+        let response = [
+            self.id.to_be_bytes(),
+            self.state.current_term.to_be_bytes(),
+            3u32.to_be_bytes(),
+            1u32.to_be_bytes(),
+        ]
+        .concat();
         let leader_address = self.config.id_to_address_mapping.get(&id).unwrap();
         let leader_ip = leader_address.split(":").collect::<Vec<&str>>()[0];
         let leader_port = leader_address.split(":").collect::<Vec<&str>>()[1];
         println!("Sending append entries response to leader: {}", id);
-        if let Err(e) = self.network_manager.send(leader_ip, leader_port, &response).await {
+        if let Err(e) = self
+            .network_manager
+            .send(leader_ip, leader_port, &response)
+            .await
+        {
             eprintln!("Failed to send append entries response: {}", e);
         }
-
     }
 
     async fn handle_append_entries_response(&mut self, data: &[u8]) {
@@ -519,8 +575,11 @@ impl Server {
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let success = u32::from_be_bytes(data[12..16].try_into().unwrap()) == 1;
 
-        println!("Append entries response from peer: {} with term: {} and success: {}", sender_id, term, success);
-        
+        println!(
+            "Append entries response from peer: {} with term: {} and success: {}",
+            sender_id, term, success
+        );
+
         if term > self.state.current_term {
             return;
         }
@@ -537,11 +596,28 @@ impl Server {
             if quorum_index >= self.state.commit_index {
                 self.state.commit_index = quorum_index;
                 // return client response
-                let response_data = [self.id.to_be_bytes(), self.state.current_term.to_be_bytes(), 7u32.to_be_bytes(), 1u32.to_be_bytes()].concat();
-                if let Err(e) = self.network_manager.send(self.config.address.as_str(), self.config.port.to_string().as_str(), &response_data).await {
+                let response_data = [
+                    self.id.to_be_bytes(),
+                    self.state.current_term.to_be_bytes(),
+                    7u32.to_be_bytes(),
+                    1u32.to_be_bytes(),
+                ]
+                .concat();
+                if let Err(e) = self
+                    .network_manager
+                    .send(
+                        self.config.address.as_str(),
+                        self.config.port.to_string().as_str(),
+                        &response_data,
+                    )
+                    .await
+                {
                     eprintln!("Failed to send client response: {}", e);
                 }
-                println!("Quorum decision reached to commit index: {}", self.state.commit_index);
+                println!(
+                    "Quorum decision reached to commit index: {}",
+                    self.state.commit_index
+                );
             }
         } else {
             self.state.next_index[sender_id as usize - 1] -= 1;
@@ -560,14 +636,17 @@ impl Server {
     }
 
     async fn persist_to_disk(&mut self, id: u32, data: &[u8]) {
-        println!("Persisting logs to disk from peer: {} to server: {}", id, self.id);
+        println!(
+            "Persisting logs to disk from peer: {} to server: {}",
+            id, self.id
+        );
         println!("Data: {:?}", data);
 
         // Log Compaction
         if let Err(e) = self.storage.compaction().await {
             eprintln!("Failed to do compaction on disk: {}", e);
         }
-        
+
         if self.state.state == RaftState::Follower {
             // deserialize log entries and append to log
             let log_entry = self.deserialize_log_entries(data);

@@ -1,12 +1,16 @@
-pub mod server;
-mod network;
-mod storage;
+// Author: Vipul Vaibhaw
+// Organization: SpacewalkHq
+// License: MIT License
+
+// make this file executable with `chmod +x examples/simple_run.rs`
+
 use std::collections::HashMap;
 use std::thread;
-use network::{NetworkLayer, TCPManager};
-use server::{Server, ServerConfig};
 use tokio::runtime::Runtime;
 use tokio::time::Duration;
+
+use raft_rs::network::{NetworkLayer, TCPManager};
+use raft_rs::server::{Server, ServerConfig};
 
 #[tokio::main]
 async fn main() {
@@ -20,8 +24,9 @@ async fn main() {
     id_to_address_mapping.insert(5, "127.0.0.1:5005".to_string());
 
     // Create server configs
-    let configs: Vec<_> = cluster_nodes.iter().map(|&id| {
-        ServerConfig {
+    let configs: Vec<_> = cluster_nodes
+        .iter()
+        .map(|&id| ServerConfig {
             election_timeout: Duration::from_secs(5),
             address: "127.0.0.1".to_string(),
             port: 5000 + id as u16,
@@ -29,8 +34,8 @@ async fn main() {
             id_to_address_mapping: id_to_address_mapping.clone(),
             default_leader: Some(1 as u32),
             leadership_preferences: HashMap::new(),
-        }
-    }).collect();
+        })
+        .collect();
 
     // Start servers in separate threads
     let mut handles = vec![];
@@ -45,7 +50,7 @@ async fn main() {
 
     // Simulate a client request after some delay
     thread::sleep(Duration::from_secs(20));
-    client_request(1, 42 as u32).await;    
+    client_request(1, 42 as u32).await;
     thread::sleep(Duration::from_secs(2));
     // Join all server threads
     for handle in handles {
@@ -57,9 +62,18 @@ async fn client_request(client_id: u32, data: u32) {
     let server_address = "127.0.0.1"; // Assuming server 1 is the leader
     let network_manager = TCPManager::new(server_address.to_string(), 5001);
 
-    let request_data = vec![client_id.to_be_bytes().to_vec(), 10u32.to_be_bytes().to_vec(), 6u32.to_be_bytes().to_vec(), data.to_be_bytes().to_vec()].concat();
+    let request_data = vec![
+        client_id.to_be_bytes().to_vec(),
+        10u32.to_be_bytes().to_vec(),
+        6u32.to_be_bytes().to_vec(),
+        data.to_be_bytes().to_vec(),
+    ]
+    .concat();
 
-    if let Err(e) = network_manager.send(server_address, "5001", &request_data).await {
+    if let Err(e) = network_manager
+        .send(server_address, "5001", &request_data)
+        .await
+    {
         eprintln!("Failed to send client request: {}", e);
     }
 
