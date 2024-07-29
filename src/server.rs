@@ -65,6 +65,7 @@ pub struct ServerConfig {
     // Include default leader and leadership preferences
     pub default_leader: Option<u32>,
     pub leadership_preferences: HashMap<u32, u32>,
+    pub storage_location: Option<String>,
 }
 
 pub struct Server {
@@ -102,6 +103,12 @@ impl Server {
         };
         let network_manager = TCPManager::new(config.address.clone(), config.port);
 
+        // if storage location is provided, use it else set empty string to use default location
+        let storage = match config.storage_location.clone() {
+            Some(location) => LocalStorage::new(location + &format!("server_{}.log", id)),
+            None => LocalStorage::new(format!("server_{}.log", id)),
+        };
+
         Server {
             id,
             state,
@@ -110,7 +117,7 @@ impl Server {
             network_manager,
             write_buffer: Vec::new(),
             debounce_timer: Instant::now(),
-            storage: LocalStorage::new(format!("server_{}.log", id)),
+            storage,
         }
     }
 

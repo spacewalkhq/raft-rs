@@ -34,6 +34,7 @@ async fn main() {
             id_to_address_mapping: id_to_address_mapping.clone(),
             default_leader: Some(1 as u32),
             leadership_preferences: HashMap::new(),
+            storage_location: Some("logs/".to_string()),
         })
         .collect();
 
