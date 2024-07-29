@@ -22,6 +22,7 @@ An understandable, fast, scalable and optimized Raft implementation.
 ## To-Do
 - [ ] Production-ready
 - [ ] io_uring support
+- [ ] Tigerbeetle style replica repair
 - [ ] CI integration improvements
 - [ ] Complete batch write implementation
 - [ ] Improve Log compaction
