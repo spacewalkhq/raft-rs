@@ -5,7 +5,7 @@
 use std::error::Error;
 use std::path::Path;
 use tokio::fs::{self, File};
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub trait Storage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
