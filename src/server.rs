@@ -129,15 +129,6 @@ impl Server {
             return;
         }
 
-        let log_byte = self.storage.retrieve().await;
-        if let Ok(log) = log_byte {
-            let log_entries: Vec<LogEntry> = bincode::deserialize(&log).unwrap();
-            self.state.log = VecDeque::from(log_entries);
-            println!("Log after reading from disk: {:?}", self.state.log);
-        } else {
-            println!("No log entries found on disk");
-        }
-
         self.state.match_index = vec![0; self.peers.len()+1];
         self.state.next_index = vec![0; self.peers.len()+1];
 
