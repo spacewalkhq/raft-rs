@@ -22,10 +22,11 @@ An understandable, fast, scalable and optimized Raft implementation.
 ## To-Do
 - [ ] Production-ready
 - [ ] io_uring support
-= [ ] CI integration improvements
+- [ ] CI integration improvements
 - [ ] Complete batch write implementation
 - [ ] Improve Log compaction
 - [ ] Improve error handling
+- [ ] RDMA support
 - [ ] Add more comprehensive tests
 - [ ] Enhance documentation
 - [ ] Implement dynamic cluster membership changes
