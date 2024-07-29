@@ -1,5 +1,5 @@
 # Raft-rs
-An understandable, fast, scalable and production-ready Raft implementation. 
+An understandable, fast, scalable and optimized Raft implementation. 
 
 ## Goals
 - [x] Understandable
@@ -11,8 +11,10 @@ An understandable, fast, scalable and production-ready Raft implementation.
 - [x] Log compaction
 
 ## To-Do
+- [ ] Production-ready
 - [ ] io_uring support
 - [ ] Complete batch write implementation
+- [ ] Improve Log compaction
 - [ ] Improve error handling
 - [ ] Add more comprehensive tests
 - [ ] Enhance documentation

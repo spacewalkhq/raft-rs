@@ -10,6 +10,7 @@ use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 pub trait Storage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
+    async fn compaction(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn delete(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
@@ -42,6 +43,16 @@ impl LocalStorage {
         fs::remove_file(path).await?;
         Ok(())
     }
+
+    async fn compaction_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // if file size is greater than 1MB, then compact it
+        let path = Path::new(&self.path);
+        let metadata = fs::metadata(path).await?;
+        if metadata.len() > 1_000_000 {
+            self.delete_async().await?;
+        }
+        Ok(())
+    }
 }
 
 impl Storage for LocalStorage {
@@ -59,6 +70,14 @@ impl Storage for LocalStorage {
         tokio::spawn(async move {
             storage.retrieve_async().await
         }).await?
+    }
+
+    async fn compaction(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let storage = self.clone();
+        tokio::spawn(async move {
+            storage.compaction_async().await
+        }).await??;
+        Ok(())
     }
 
     async fn delete(&self) -> Result<(), Box<dyn Error + Send + Sync>> {

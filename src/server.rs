@@ -129,6 +129,24 @@ impl Server {
             return;
         }
 
+        let log_byte = self.storage.retrieve().await;
+        if let Ok(log) = log_byte {
+            for entry in log.chunks(std::mem::size_of::<LogEntry>()) {
+                if entry.len() != std::mem::size_of::<LogEntry>() {
+                    break;
+                }
+                let log_entry = self.deserialize_log_entries(&entry);
+                println!("Log entry from disk: {:?}", log_entry);
+                if log_entry.term > self.state.current_term {
+                    self.state.current_term = log_entry.term;
+                }
+                self.state.log.push_front(log_entry);
+            }
+            println!("Log after reading from disk: {:?}", self.state.log);
+        } else {
+            println!("No log entries found on disk");
+        }
+
         self.state.match_index = vec![0; self.peers.len()+1];
         self.state.next_index = vec![0; self.peers.len()+1];
 
@@ -264,8 +282,8 @@ impl Server {
                         let append_batch = self.prepare_append_batch(self.id, self.state.current_term, self.state.previous_log_index, self.state.commit_index, self.write_buffer.clone());
 
                         for entry in self.write_buffer.clone() {
-                            let data = [1u32.to_be_bytes(), entry.data.to_be_bytes()].concat();
-                            self.append_log(self.id, self.state.current_term, &data).await;
+                            let data = bincode::serialize(&entry).unwrap();
+                            self.persist_to_disk(self.id, &data).await;
                         }
 
                         let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
@@ -372,10 +390,12 @@ impl Server {
         let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
         let entry = LogEntry { leader_id: self.id, server_id: self.id, term, command, data };
         println!("Received client request: {:?}", entry);
+        self.write_buffer.push(entry.clone());
+
+        self.state.log.push_front(entry);
         self.state.previous_log_index += 1;
         self.state.commit_index += 1;
         self.state.current_term += 1;
-        self.write_buffer.push(entry);
     }
 
     async fn handle_request_vote(&mut self, data: &[u8]) {
@@ -464,10 +484,18 @@ impl Server {
             return;
         }
 
-        let set_command = 1u32.to_be_bytes();
-        let data = [set_command.to_vec(), 42u32.to_be_bytes().to_vec()].concat();
+        let log_entry: LogEntry = LogEntry {
+            leader_id: id,
+            server_id: self.id,
+            term: leader_term,
+            command: LogCommand::Set,
+            data: u32::from_be_bytes(data[24..28].try_into().unwrap()),
+        };
 
-        let _ = self.append_log(id, leader_term, &data).await;
+        // serialize log entry and append to log
+        let data = bincode::serialize(&log_entry).unwrap();
+
+        let _ = self.persist_to_disk(id, &data).await;
 
         self.state.current_term += 1; // increment term on successful append for follower
         
@@ -531,53 +559,32 @@ impl Server {
         // Noop
     }
 
-    async fn append_log(&mut self, id: u32, term: u32, data: &[u8]) {
-        println!("Appending logs to disk from peer: {} to server: {}", id, self.id);
+    async fn persist_to_disk(&mut self, id: u32, data: &[u8]) {
+        println!("Persisting logs to disk from peer: {} to server: {}", id, self.id);
         println!("Data: {:?}", data);
 
-        let log_entries = self.deserialize_log_entries(id, term, data);
-
         // Log Compaction
-        if self.state.log.len() > 50 {
-            self.state.log.truncate(25);
+        if let Err(e) = self.storage.compaction().await {
+            eprintln!("Failed to do compaction on disk: {}", e);
         }
-
-        for entry in log_entries {
-            self.state.log.push_front(entry.clone());
-            let serialized_entry = bincode::serialize(&entry).unwrap();
-            if let Err(e) = self.storage.store(&serialized_entry).await {
-                eprintln!("Failed to store log entry to disk: {}", e);
-            }
+        
+        if self.state.state == RaftState::Follower {
+            // deserialize log entries and append to log
+            let log_entry = self.deserialize_log_entries(data);
+            self.state.log.push_front(log_entry);
+        }
+        if let Err(e) = self.storage.store(&data).await {
+            eprintln!("Failed to store log entry to disk: {}", e);
         }
 
         println!("Log after appending: {:?}", self.state.log);
     }
 
-    fn deserialize_log_entries(&self, sender_id: u32, term: u32, data: &[u8]) -> Vec<LogEntry> {
-        let mut entries = Vec::new();
-        let mut index = 0;
-        while index < data.len() {
-            let command_type = u32::from_be_bytes(data[index..index + 4].try_into().unwrap());
-            index += 4;
-            let command = match command_type {
-                0 => LogCommand::Noop,
-                1 => LogCommand::Set,
-                2 => LogCommand::Delete,
-                _ => panic!("Invalid command type"),
-            };
-            let entry_data = u32::from_be_bytes(data[index..index + 4].try_into().unwrap());
-            index += 4;
-
-            let entry = LogEntry {
-                leader_id: sender_id,
-                server_id: self.id,
-                term,
-                command,
-                data: entry_data,
-            };
-            entries.push(entry);
-        }
-        entries
+    fn deserialize_log_entries(&self, data: &[u8]) -> LogEntry {
+        // convert data to logEntry using bincode
+        println!("Deserializing log entry: {:?}", data);
+        let data = bincode::deserialize(data).unwrap();
+        data
     }
 
     fn is_quorum(&self, votes: u32) -> bool {
