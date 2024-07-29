@@ -8,7 +8,7 @@ An understandable, fast, scalable and optimized Raft implementation.
 
 - Expect breaking changes in the API and the implementation.
 
-- Release version 0.1.0 is planned to be released by August 16th, 2024.
+- Release version 0.1.0 is planned to be released by **August 16th, 2024**.
 
 ## Goals
 - [x] Understandable
