@@ -59,4 +59,4 @@ Contributions are welcome! If you have any ideas, suggestions, or issues, please
 This project is licensed under the MIT License. For more information, please refer to the [LICENSE](LICENSE) file.
 
 ## Contact
-For any questions or feedback, please reach out to [vaibhaw.vipul@example.com].
+For any questions or feedback, please reach out to [vaibhaw.vipul@gmail.com].
