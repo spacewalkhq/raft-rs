@@ -127,6 +127,12 @@ impl Server {
             return;
         }
 
+        // there should be atleast 3 peers to form a quorum
+        if self.peers.len() < 2 {
+            eprintln!("At least 3 peers are required to form a quorum");
+            return;
+        }
+
         loop {
             match self.state.state {
                 RaftState::Follower => self.follower().await,
