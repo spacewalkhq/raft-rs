@@ -165,7 +165,11 @@ impl Server {
             println!("Log after reading from disk: {:?}", self.state.log);
         } else {
             // Data integrity check failed
-            if log_byte.unwrap_err().to_string().contains("Data integrity check failed") {
+            if log_byte
+                .unwrap_err()
+                .to_string()
+                .contains("Data integrity check failed")
+            {
                 eprintln!("Data integrity check failed");
                 // try repair the log from other peers
                 // step1 delete the log file
@@ -186,10 +190,15 @@ impl Server {
                             .clone()
                     })
                     .collect();
-                let data = [self.id.to_be_bytes(), 0u32.to_be_bytes(), 2u32.to_be_bytes()].concat();
+                let data = [
+                    self.id.to_be_bytes(),
+                    0u32.to_be_bytes(),
+                    2u32.to_be_bytes(),
+                ]
+                .concat();
                 let _ = self.network_manager.broadcast(&data, addresses).await;
                 return;
-            } 
+            }
             println!("No log entries found on disk");
         }
 
