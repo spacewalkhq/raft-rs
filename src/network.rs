@@ -132,11 +132,14 @@ impl NetworkLayer for TCPManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::network::{NetworkLayer, TCPManager};
+    use tokio::task::JoinSet;
+
+    const LOCALHOST: &str = "127.0.0.1";
 
     #[tokio::test]
     async fn test_send() {
-        let network = TCPManager::new("127.0.0.1".to_string(), 8082);
+        let network = TCPManager::new(LOCALHOST.to_string(), 8082);
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
@@ -151,7 +154,90 @@ mod tests {
                 }
             }
         });
-        network.send("127.0.0.1", "8082", &data).await.unwrap();
+        // Sending to a valid address
+        let send_result = network.send(LOCALHOST, "8082", &data).await;
+        assert!(send_result.is_ok());
+
+        // Sending to a valid address
+        let send_result = network.send(LOCALHOST, "8083", &data).await;
+        assert!(send_result.is_err());
+
         handler.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_receive() {
+        let network = TCPManager::new(LOCALHOST.to_string(), 8082);
+        let data = vec![1, 2, 3];
+        network.open().await.unwrap();
+        let network_clone = network.clone();
+        let handler = tokio::spawn(async move { network_clone.receive().await.unwrap() });
+
+        network.send(LOCALHOST, "8082", &data).await.unwrap();
+        let rx_data = handler.await.unwrap();
+        assert_eq!(rx_data, data)
+    }
+
+    #[tokio::test]
+    async fn test_open() {
+        let network = TCPManager::new(LOCALHOST.to_string(), 8081);
+        let status = network.open().await;
+        assert!(status.is_ok());
+        assert!(*network.is_open.lock().await);
+    }
+
+    #[tokio::test]
+    async fn test_close() {
+        let network = TCPManager::new(LOCALHOST.to_string(), 8081);
+        // Open the connection
+        let _ = network.open().await;
+
+        let close_status = network.close().await;
+        assert!(close_status.is_ok());
+        assert!(!*network.is_open.lock().await);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast() {
+        let data = vec![1, 2, 3, 4];
+        // Node to broadcast data
+        let tx = TCPManager::new(LOCALHOST.to_string(), 8081);
+        tx.open().await.unwrap();
+        assert!(*tx.is_open.lock().await);
+
+        // vec to keep track of all receiver nodes
+        let mut receivers = vec![];
+        // vec to keep track of address of receiver nodes
+        let mut addresses = vec![];
+
+        for p in 8082..8090 {
+            // Create a receiver node
+            let rx = TCPManager::new(LOCALHOST.to_string(), p);
+            addresses.push(format!("{}:{}", LOCALHOST, p));
+            // Open the connect
+            rx.open().await.unwrap();
+            assert!(*rx.is_open.lock().await);
+            receivers.push(rx)
+        }
+
+        let mut s = JoinSet::new();
+        for rx in receivers {
+            s.spawn(async move {
+                let rx_data = rx.receive().await;
+                assert!(rx_data.is_ok());
+                // return the received data
+                rx_data.unwrap()
+            });
+        }
+
+        // send the data to all receiver nodes
+        let broadcast_result = tx.broadcast(&data, addresses).await;
+        assert!(broadcast_result.is_ok());
+
+        // asser the data received
+        while let Some(res) = s.join_next().await {
+            let rx_data = res.unwrap();
+            assert_eq!(data, rx_data)
+        }
     }
 }
