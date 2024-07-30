@@ -155,7 +155,7 @@ impl Server {
                 if entry.len() != std::mem::size_of::<LogEntry>() {
                     break;
                 }
-                let log_entry = self.deserialize_log_entries(&entry);
+                let log_entry = self.deserialize_log_entries(entry);
                 println!("Log entry from disk: {:?}", log_entry);
                 if log_entry.term > self.state.current_term {
                     self.state.current_term = log_entry.term;
@@ -165,7 +165,7 @@ impl Server {
             println!("Log after reading from disk: {:?}", self.state.log);
         } else {
             // Data integrity check failed
-            if (log_byte.unwrap_err().to_string().contains("Data integrity check failed")) {
+            if log_byte.unwrap_err().to_string().contains("Data integrity check failed") {
                 eprintln!("Data integrity check failed");
                 // try repair the log from other peers
                 // step1 delete the log file
@@ -200,14 +200,11 @@ impl Server {
         // default leader
         if self.state.current_term == 0 {
             self.state.current_term += 1;
-            match self.config.default_leader {
-                Some(leader_id) => {
-                    if self.id == leader_id {
-                        self.state.state = RaftState::Leader;
-                        return;
-                    }
+            if let Some(leader_id) = self.config.default_leader {
+                if self.id == leader_id {
+                    self.state.state = RaftState::Leader;
+                    return;
                 }
-                None => {}
             }
         }
         loop {
@@ -507,8 +504,8 @@ impl Server {
             println!("Candidate address not found");
             return;
         }
-        let candidate_ip = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[0];
-        let candidate_port = candidate_address.unwrap().split(":").collect::<Vec<&str>>()[1];
+
+        let (candidate_ip, candidate_port) = parse_address(candidate_address.unwrap());
 
         let data = [
             self.id.to_be_bytes(),
@@ -605,8 +602,7 @@ impl Server {
         ]
         .concat();
         let leader_address = self.config.id_to_address_mapping.get(&id).unwrap();
-        let leader_ip = leader_address.split(":").collect::<Vec<&str>>()[0];
-        let leader_port = leader_address.split(":").collect::<Vec<&str>>()[1];
+        let (leader_ip, leader_port) = parse_address(leader_address);
         println!("Sending append entries response to leader: {}", id);
         if let Err(e) = self
             .network_manager
@@ -686,6 +682,7 @@ impl Server {
         // Noop
     }
 
+    #[allow(dead_code)]
     async fn handle_repair_request(&mut self, data: &[u8]) {
         let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
 
@@ -719,8 +716,7 @@ impl Server {
         }
 
         let peer_address = self.config.id_to_address_mapping.get(&peer_id).unwrap();
-        let peer_ip = peer_address.split(":").collect::<Vec<&str>>()[0];
-        let peer_port = peer_address.split(":").collect::<Vec<&str>>()[1];
+        let (peer_ip, peer_port) = parse_address(peer_address);
         if let Err(e) = self
             .network_manager
             .send(peer_ip, peer_port, &response)
@@ -730,8 +726,9 @@ impl Server {
         }
     }
 
+    #[allow(dead_code)]
     async fn handle_repair_response(&mut self, data: &[u8]) {
-        if !self.storage.turned_malicious().await.is_ok() {
+        if self.storage.turned_malicious().await.is_err() {
             return;
         }
 
@@ -763,7 +760,7 @@ impl Server {
             let log_entry = self.deserialize_log_entries(data);
             self.state.log.push_front(log_entry);
         }
-        if let Err(e) = self.storage.store(&data).await {
+        if let Err(e) = self.storage.store(data).await {
             eprintln!("Failed to store log entry to disk: {}", e);
         }
 
@@ -773,17 +770,23 @@ impl Server {
     fn deserialize_log_entries(&self, data: &[u8]) -> LogEntry {
         // convert data to logEntry using bincode
         println!("Deserializing log entry: {:?}", data);
-        let data = bincode::deserialize(data).unwrap();
-        data
+        bincode::deserialize(data).unwrap()
     }
 
     fn is_quorum(&self, votes: u32) -> bool {
         votes > (self.peers.len() / 2).try_into().unwrap_or_default()
     }
 
+    #[allow(dead_code)]
     async fn stop(&self) {
         if let Err(e) = self.network_manager.close().await {
             eprintln!("Failed to close network manager: {}", e);
         }
     }
+}
+
+/// Helper function to parse the IP address delimited by ':' and return tuple of (ip, port)
+fn parse_address(addr: &str) -> (&str, &str) {
+    let tokens = addr.split(':').collect::<Vec<&str>>();
+    (tokens[0], tokens[1])
 }

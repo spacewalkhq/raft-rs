@@ -93,7 +93,7 @@ impl NetworkLayer for TCPManager {
         addresses: Vec<String>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let futures = addresses.into_iter().map(|address| {
-            let address = address.split(":").collect::<Vec<&str>>();
+            let address = address.split(':').collect::<Vec<&str>>();
             let addr: SocketAddr = format!("{}:{}", address[0], address[1]).parse().unwrap();
             Self::async_send(data, addr)
         });
