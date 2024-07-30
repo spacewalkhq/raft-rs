@@ -15,6 +15,17 @@ jobs:
       with:
         toolchain: stable
         override: true
+    
+    - name: Check formatting
+      run: cargo fmt -- --check
+  
+    - name: Check Unused Dependencies
+      run: | 
+        cargo install cargo-machete
+        cargo machete
+  
+    - name: Check Linting
+      run: cargo clippy -- -D warnings
 
     - name: Build project
       run: cargo build
