@@ -1,4 +1,5 @@
 use crate::network::{NetworkLayer, TCPManager};
+use crate::parse_ip_address;
 use crate::storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -514,7 +515,7 @@ impl Server {
             return;
         }
 
-        let (candidate_ip, candidate_port) = parse_address(candidate_address.unwrap());
+        let (candidate_ip, candidate_port) = parse_ip_address(candidate_address.unwrap());
 
         let data = [
             self.id.to_be_bytes(),
@@ -611,7 +612,7 @@ impl Server {
         ]
         .concat();
         let leader_address = self.config.id_to_address_mapping.get(&id).unwrap();
-        let (leader_ip, leader_port) = parse_address(leader_address);
+        let (leader_ip, leader_port) = parse_ip_address(leader_address);
         println!("Sending append entries response to leader: {}", id);
         if let Err(e) = self
             .network_manager
@@ -725,7 +726,7 @@ impl Server {
         }
 
         let peer_address = self.config.id_to_address_mapping.get(&peer_id).unwrap();
-        let (peer_ip, peer_port) = parse_address(peer_address);
+        let (peer_ip, peer_port) = parse_ip_address(peer_address);
         if let Err(e) = self
             .network_manager
             .send(peer_ip, peer_port, &response)
@@ -792,10 +793,4 @@ impl Server {
             eprintln!("Failed to close network manager: {}", e);
         }
     }
-}
-
-/// Helper function to parse the IP address delimited by ':' and return tuple of (ip, port)
-fn parse_address(addr: &str) -> (&str, &str) {
-    let tokens = addr.split(':').collect::<Vec<&str>>();
-    (tokens[0], tokens[1])
 }

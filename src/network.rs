@@ -2,6 +2,7 @@
 // organization : SpacewalkHq
 // License : MIT License
 
+use crate::parse_ip_address;
 use async_trait::async_trait;
 use futures::future::join_all;
 use std::error::Error;
@@ -93,8 +94,8 @@ impl NetworkLayer for TCPManager {
         addresses: Vec<String>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let futures = addresses.into_iter().map(|address| {
-            let address = address.split(':').collect::<Vec<&str>>();
-            let addr: SocketAddr = format!("{}:{}", address[0], address[1]).parse().unwrap();
+            let (ip, port) = parse_ip_address(&address);
+            let addr: SocketAddr = format!("{}:{}", ip, port).parse().unwrap();
             Self::async_send(data, addr)
         });
         join_all(futures)
@@ -145,7 +146,7 @@ mod tests {
                 if data.is_empty() {
                     continue;
                 } else {
-                    assert!(data == vec![1, 2, 3]);
+                    assert_eq!(data, vec![1, 2, 3]);
                     break;
                 }
             }

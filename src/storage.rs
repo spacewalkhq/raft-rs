@@ -2,6 +2,7 @@
 // Organization: SpacewalkHq
 // License: MIT License
 
+use async_trait::async_trait;
 use hex;
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -9,6 +10,7 @@ use std::path::Path;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[async_trait]
 pub trait Storage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
@@ -77,6 +79,7 @@ impl LocalStorage {
     }
 }
 
+#[async_trait]
 impl Storage for LocalStorage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let data = data.to_vec();
