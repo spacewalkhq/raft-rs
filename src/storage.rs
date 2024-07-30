@@ -6,9 +6,12 @@ use async_trait::async_trait;
 use hex;
 use sha2::{Digest, Sha256};
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const MAX_FILE_SIZE: u64 = 1_000_000;
+const CHECKSUM_LEN: usize = 64;
 
 #[async_trait]
 pub trait Storage {
@@ -19,18 +22,19 @@ pub trait Storage {
     async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
+#[derive(Clone)]
 pub struct LocalStorage {
-    path: String,
+    path: PathBuf,
 }
 
 impl LocalStorage {
     pub fn new(path: String) -> Self {
-        LocalStorage { path }
+        LocalStorage { path: path.into() }
     }
 
     async fn store_async(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let checksum = Self::calculate_checksum(data);
-        let data_with_checksum = [data, checksum.as_bytes()].concat();
+        let data_with_checksum = [data, checksum.as_slice()].concat();
 
         let path = Path::new(&self.path);
         let mut file = File::create(&path).await?;
@@ -44,8 +48,12 @@ impl LocalStorage {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
+        if buffer.len() < CHECKSUM_LEN {
+            return Err("File is potentially malicious".into());
+        }
+
         let data = &buffer[..buffer.len() - 64];
-        let stored_checksum = String::from_utf8(buffer[buffer.len() - 64..].to_vec())?;
+        let stored_checksum = Self::retrieve_checksum(data);
         let calculated_checksum = Self::calculate_checksum(data);
 
         if stored_checksum != calculated_checksum {
@@ -65,17 +73,25 @@ impl LocalStorage {
         // If file size is greater than 1MB, then compact it
         let path = Path::new(&self.path);
         let metadata = fs::metadata(path).await?;
-        if metadata.len() > 1_000_000 {
+        if metadata.len() > MAX_FILE_SIZE {
             self.delete_async().await?;
         }
         Ok(())
     }
 
-    fn calculate_checksum(data: &[u8]) -> String {
+    fn calculate_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
         let mut hasher = Sha256::new();
         hasher.update(data);
         let result = hasher.finalize();
-        hex::encode(result)
+        let mut checksum = [0u8; 64];
+        checksum.copy_from_slice(hex::encode(result).as_bytes());
+        checksum
+    }
+
+    fn retrieve_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
+        let mut op = [0; 64];
+        op.copy_from_slice(&data[data.len() - CHECKSUM_LEN..]);
+        op
     }
 }
 
@@ -108,21 +124,27 @@ impl Storage for LocalStorage {
     async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Check if the file is tampered with
         let data = self.retrieve().await?;
-        let checksum = Self::calculate_checksum(&data);
+        let checksum = Self::retrieve_checksum(&data);
         let path = Path::new(&self.path);
         let metadata = fs::metadata(path).await?;
 
-        if metadata.len() > 1_000_000 || checksum != Self::calculate_checksum(&data) {
+        if metadata.len() > MAX_FILE_SIZE || checksum != Self::calculate_checksum(&data) {
             return Err("File is potentially malicious".into());
         }
         Ok(())
     }
 }
 
-impl Clone for LocalStorage {
-    fn clone(&self) -> Self {
-        LocalStorage {
-            path: self.path.clone(),
-        }
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_calculate_checksum() {
+        unimplemented!()
+    }
+
+    #[test]
+    fn test_retrieve_checksum() {
+        unimplemented!()
     }
 }
