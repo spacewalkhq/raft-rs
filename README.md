@@ -1,5 +1,6 @@
 # Raft-rs
-An understandable, fast, scalable and optimized Raft implementation. 
+An understandable, fast, scalable and optimized Raft implementation.
+It is asynchronous(built on tokio runtime) and supports zero-copy. It does not assume logs to be non-malicious, if corrupted, it will repair the logs via peer-to-peer communication. 
 
 ## Note
 - This project is still under development and is not yet production-ready. It is not recommended to use this in production environments.
@@ -19,11 +20,12 @@ An understandable, fast, scalable and optimized Raft implementation.
 - [x] Default Leader 
 - [x] Leadership preference
 - [x] Log compaction
+- [x] Tigerbeetle style replica repair
 
 ## To-Do
 - [ ] Production-ready
+- [ ] Test replica repair thoroughly
 - [ ] io_uring support
-- [ ] Tigerbeetle style replica repair
 - [ ] CI integration improvements
 - [ ] Complete batch write implementation
 - [ ] Improve Log compaction

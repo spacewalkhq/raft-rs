@@ -22,6 +22,8 @@ enum MesageType {
     HeartbeatResponse,
     ClientRequest,
     ClientResponse,
+    RepairRequest,
+    RepairResponse,
 }
 
 #[derive(Debug)]
@@ -162,6 +164,32 @@ impl Server {
             }
             println!("Log after reading from disk: {:?}", self.state.log);
         } else {
+            // Data integrity check failed
+            if (log_byte.unwrap_err().to_string().contains("Data integrity check failed")) {
+                eprintln!("Data integrity check failed");
+                // try repair the log from other peers
+                // step1 delete the log file
+                if let Err(e) = self.storage.delete().await {
+                    eprintln!("Failed to delete log file: {}", e);
+                }
+
+                // step2 get the log from other peers
+                // ping all the peers to get the log
+                let addresses: Vec<String> = self
+                    .peers
+                    .iter()
+                    .map(|peer_id| {
+                        self.config
+                            .id_to_address_mapping
+                            .get(peer_id)
+                            .unwrap()
+                            .clone()
+                    })
+                    .collect();
+                let data = [self.id.to_be_bytes(), 0u32.to_be_bytes(), 2u32.to_be_bytes()].concat();
+                let _ = self.network_manager.broadcast(&data, addresses).await;
+                return;
+            } 
             println!("No log entries found on disk");
         }
 
@@ -384,6 +412,8 @@ impl Server {
             5 => MesageType::HeartbeatResponse,
             6 => MesageType::ClientRequest,
             7 => MesageType::ClientResponse,
+            8 => MesageType::RepairRequest,
+            9 => MesageType::RepairResponse,
             _ => return,
         };
 
@@ -418,6 +448,14 @@ impl Server {
                 } else {
                     println!("Consensus not reached!");
                 }
+            }
+            MesageType::RepairRequest => {
+                // TODO: get implementation from user based on the application
+                println!("Received repair request: {:?}", data);
+            }
+            MesageType::RepairResponse => {
+                // TODO: get implementation from user based on the application
+                println!("Received repair response: {:?}", data);
             }
         }
     }
@@ -646,6 +684,66 @@ impl Server {
 
     async fn handle_heartbeat_response(&mut self) {
         // Noop
+    }
+
+    async fn handle_repair_request(&mut self, data: &[u8]) {
+        let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+
+        let log_byte = self.storage.retrieve().await;
+        if log_byte.is_err() {
+            eprintln!("Failed to retrieve log entries from disk");
+            return;
+        }
+
+        let log = log_byte.unwrap();
+        let log_entries = log.chunks(std::mem::size_of::<LogEntry>());
+        let mut repair_data = Vec::new();
+        for entry in log_entries {
+            if entry.len() != std::mem::size_of::<LogEntry>() {
+                break;
+            }
+            repair_data.extend_from_slice(entry);
+        }
+
+        // send log entries to peer
+        let mut response = [
+            self.id.to_be_bytes(),
+            self.state.current_term.to_be_bytes(),
+            9u32.to_be_bytes(),
+            1u32.to_be_bytes(),
+        ]
+        .concat();
+
+        for entry in repair_data {
+            response = [response.clone(), entry.to_be_bytes().to_vec()].concat();
+        }
+
+        let peer_address = self.config.id_to_address_mapping.get(&peer_id).unwrap();
+        let peer_ip = peer_address.split(":").collect::<Vec<&str>>()[0];
+        let peer_port = peer_address.split(":").collect::<Vec<&str>>()[1];
+        if let Err(e) = self
+            .network_manager
+            .send(peer_ip, peer_port, &response)
+            .await
+        {
+            eprintln!("Failed to send repair response: {}", e);
+        }
+    }
+
+    async fn handle_repair_response(&mut self, data: &[u8]) {
+        if !self.storage.turned_malicious().await.is_ok() {
+            return;
+        }
+
+        let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+        if term < self.state.current_term {
+            return;
+        }
+
+        let log_entries = data[16..].to_vec();
+        if let Err(e) = self.storage.store(&log_entries).await {
+            eprintln!("Failed to store log entries to disk: {}", e);
+        }
     }
 
     async fn persist_to_disk(&mut self, id: u32, data: &[u8]) {
