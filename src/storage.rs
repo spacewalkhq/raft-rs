@@ -2,13 +2,15 @@
 // Organization: SpacewalkHq
 // License: MIT License
 
+use async_trait::async_trait;
+use hex;
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::path::Path;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use sha2::{Sha256, Digest};
-use hex;
 
+#[async_trait]
 pub trait Storage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
@@ -29,7 +31,7 @@ impl LocalStorage {
     async fn store_async(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let checksum = Self::calculate_checksum(data);
         let data_with_checksum = [data, checksum.as_bytes()].concat();
-        
+
         let path = Path::new(&self.path);
         let mut file = File::create(&path).await?;
         file.write_all(&data_with_checksum).await?;
@@ -42,10 +44,10 @@ impl LocalStorage {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
-        let data = &buffer[..buffer.len()-64];
-        let stored_checksum = String::from_utf8(buffer[buffer.len()-64..].to_vec())?;
+        let data = &buffer[..buffer.len() - 64];
+        let stored_checksum = String::from_utf8(buffer[buffer.len() - 64..].to_vec())?;
         let calculated_checksum = Self::calculate_checksum(data);
-        
+
         if stored_checksum != calculated_checksum {
             return Err("Data integrity check failed!".into());
         }
@@ -77,6 +79,7 @@ impl LocalStorage {
     }
 }
 
+#[async_trait]
 impl Storage for LocalStorage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
         let data = data.to_vec();
@@ -108,7 +111,7 @@ impl Storage for LocalStorage {
         let checksum = Self::calculate_checksum(&data);
         let path = Path::new(&self.path);
         let metadata = fs::metadata(path).await?;
-        
+
         if metadata.len() > 1_000_000 || checksum != Self::calculate_checksum(&data) {
             return Err("File is potentially malicious".into());
         }
