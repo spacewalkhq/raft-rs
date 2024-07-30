@@ -15,6 +15,7 @@ An understandable, fast, scalable and optimized Raft implementation.
 - [x] Fast
 - [x] Scalable
 - [x] Zero-Copy support
+- [x] Asynchronous
 - [x] Default Leader 
 - [x] Leadership preference
 - [x] Log compaction
