@@ -52,7 +52,7 @@ impl LocalStorage {
         }
 
         let data = &buffer[..buffer.len() - 64];
-        let stored_checksum = Self::retrieve_checksum(data);
+        let stored_checksum = Self::retrieve_checksum(&buffer);
         let calculated_checksum = Self::calculate_checksum(data);
 
         if stored_checksum != calculated_checksum {
@@ -86,6 +86,7 @@ impl LocalStorage {
     }
 
     fn retrieve_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
+        assert!(data.len() >= CHECKSUM_LEN);
         let mut op = [0; 64];
         op.copy_from_slice(&data[data.len() - CHECKSUM_LEN..]);
         op
@@ -95,27 +96,19 @@ impl LocalStorage {
 #[async_trait]
 impl Storage for LocalStorage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let data = data.to_vec();
-        let storage = self.clone();
-        tokio::spawn(async move { storage.store_async(&data).await }).await??;
-        Ok(())
+        self.store_async(data).await
     }
 
     async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        let storage = self.clone();
-        tokio::spawn(async move { storage.retrieve_async().await }).await?
+        self.retrieve_async().await
     }
 
     async fn compaction(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let storage = self.clone();
-        tokio::spawn(async move { storage.compaction_async().await }).await??;
-        Ok(())
+        self.compaction_async().await
     }
 
     async fn delete(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let storage = self.clone();
-        tokio::spawn(async move { storage.delete_async().await }).await??;
-        Ok(())
+        self.delete_async().await
     }
 
     async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
