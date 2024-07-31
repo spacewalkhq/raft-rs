@@ -142,7 +142,6 @@ fn retrieve_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
 #[cfg(test)]
 mod tests {
     use std::io::Read;
-    use std::time::Duration;
 
     use tempfile::NamedTempFile;
 
@@ -169,10 +168,7 @@ mod tests {
         let store_result = storage.store(payload_data).await;
         assert!(store_result.is_ok());
 
-        // Sleeping in assumption to that data OS file buffer will be flushed
-        // but this is un deterministic
-        // FIXME: Make it more reliable
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tmp_file.as_file().sync_all().unwrap();
 
         let mut buffer = vec![];
         tmp_file.read_to_end(&mut buffer).unwrap();
@@ -199,8 +195,7 @@ mod tests {
         let mock_data = vec![0u8; 1_000_000 /*1 MB*/  - 500];
         let store_result = storage.store(&mock_data).await;
 
-        // Assuming that OS file buffer is flushed to disk in
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tmp_file.as_file().sync_all().unwrap();
 
         let compaction_result = storage.compaction().await;
         assert!(compaction_result.is_ok());
@@ -215,7 +210,7 @@ mod tests {
         let mock_data = vec![0u8; 1_000_000 /*1 MB*/];
         let store_result = storage.store(&mock_data).await;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tmp_file.as_file().sync_all().unwrap();
 
         let compaction_result = storage.compaction().await;
         assert!(compaction_result.is_ok());
