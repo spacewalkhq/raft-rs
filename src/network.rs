@@ -119,6 +119,7 @@ impl NetworkLayer for TCPManager {
     }
 
     async fn close(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+        // FIX: Can we drop the object when we close the connection
         let mut is_open = self.is_open.lock().await;
         if !*is_open {
             return Err("Listener is not open".into());
@@ -144,29 +145,31 @@ mod tests {
         network.open().await.unwrap();
         let network_clone = network.clone();
         let handler = tokio::spawn(async move {
-            loop {
-                let data = network_clone.receive().await.unwrap();
-                if data.is_empty() {
-                    continue;
-                } else {
-                    assert_eq!(data, vec![1, 2, 3]);
-                    break;
-                }
-            }
+            let _ = network_clone.receive().await.unwrap();
         });
-        // Sending to a valid address
+
         let send_result = network.send(LOCALHOST, "8082", &data).await;
         assert!(send_result.is_ok());
-
-        // Sending to a valid address
-        let send_result = network.send(LOCALHOST, "8083", &data).await;
-        assert!(send_result.is_err());
 
         handler.await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_receive() {
+    async fn test_send_closed_connection() {
+        let network = TCPManager::new(LOCALHOST.to_string(), 8082);
+        let data = vec![1, 2, 3];
+        network.open().await.unwrap();
+        let network_clone = network.clone();
+        let handler = tokio::spawn(async move {
+            let _ = network_clone.receive().await.unwrap();
+        });
+
+        let send_result = network.send(LOCALHOST, "8083", &data).await;
+        assert!(send_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_receive_happy_case() {
         let network = TCPManager::new(LOCALHOST.to_string(), 8082);
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
@@ -187,9 +190,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reopen_opened_port() {
+        let network = TCPManager::new(LOCALHOST.to_string(), 8081);
+        let status = network.open().await;
+        assert!(status.is_ok());
+        let another_network = network.clone();
+        let status = another_network.open().await;
+        assert!(status.is_err());
+    }
+
+    #[tokio::test]
     async fn test_close() {
         let network = TCPManager::new(LOCALHOST.to_string(), 8081);
-        // Open the connection
         let _ = network.open().await;
 
         let close_status = network.close().await;
@@ -198,23 +210,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_broadcast() {
+    async fn test_broadcast_happy_case() {
         let data = vec![1, 2, 3, 4];
-        // Node to broadcast data
-        let tx = TCPManager::new(LOCALHOST.to_string(), 8081);
-        tx.open().await.unwrap();
-        assert!(*tx.is_open.lock().await);
+        // Node which is about to broadcast data
+        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8081);
+        broadcasting_node.open().await.unwrap();
+        assert!(*broadcasting_node.is_open.lock().await);
 
-        // vec to keep track of all receiver nodes
+        // vec to keep track of all other nodes which should be receiving data
         let mut receivers = vec![];
-        // vec to keep track of address of receiver nodes
-        let mut addresses = vec![];
+        // vec to keep track of the address for receiver nodes
+        let mut receiver_addresses = vec![];
 
         for p in 8082..8090 {
             // Create a receiver node
             let rx = TCPManager::new(LOCALHOST.to_string(), p);
-            addresses.push(format!("{}:{}", LOCALHOST, p));
-            // Open the connect
+            receiver_addresses.push(format!("{}:{}", LOCALHOST, p));
+            // Open the connection
             rx.open().await.unwrap();
             assert!(*rx.is_open.lock().await);
             receivers.push(rx)
@@ -230,14 +242,43 @@ mod tests {
             });
         }
 
-        // send the data to all receiver nodes
-        let broadcast_result = tx.broadcast(&data, addresses).await;
+        // broadcast the data
+        let broadcast_result = broadcasting_node.broadcast(&data, receiver_addresses).await;
         assert!(broadcast_result.is_ok());
 
-        // asser the data received
+        // assert the data received on receiver nodes
         while let Some(res) = s.join_next().await {
             let rx_data = res.unwrap();
             assert_eq!(data, rx_data)
         }
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_some_nodes_down() {
+        let data = vec![1, 2, 3, 4];
+        // Node which is about to broadcast data
+        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8081);
+        broadcasting_node.open().await.unwrap();
+        assert!(*broadcasting_node.is_open.lock().await);
+
+        // vec to keep track of all other nodes which should be receiving data
+        let mut receivers = vec![];
+        // vec to keep track of the address for receiver nodes
+        let mut receiver_addresses = vec![];
+        for p in 8082..8092 {
+            // Create a receiver node
+            let rx = TCPManager::new(LOCALHOST.to_string(), p);
+            receiver_addresses.push(format!("{}:{}", LOCALHOST, p));
+            if p & 1 == 1 {
+                // Open the connection
+                rx.open().await.unwrap();
+                assert!(*rx.is_open.lock().await);
+            }
+            receivers.push(rx)
+        }
+
+        // broadcast the data
+        let broadcast_result = broadcasting_node.broadcast(&data, receiver_addresses).await;
+        assert!(broadcast_result.is_err());
     }
 }
