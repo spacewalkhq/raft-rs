@@ -23,6 +23,7 @@ sha2 = "0.10.8"
 
 [dev-dependencies]
 tempdir = "0.3.7"
+tempfile = "3.10.1"
 
 [[example]]
 name = "simple_run"

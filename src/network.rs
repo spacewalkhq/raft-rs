@@ -160,7 +160,7 @@ mod tests {
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
-        let handler = tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             let _ = network_clone.receive().await.unwrap();
         });
 

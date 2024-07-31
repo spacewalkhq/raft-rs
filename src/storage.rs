@@ -3,7 +3,7 @@
 // License: MIT License
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use hex;
@@ -33,12 +33,19 @@ impl LocalStorage {
         LocalStorage { path: path.into() }
     }
 
+    pub fn new_from_path(path: &Path) -> Self {
+        LocalStorage {
+            path: PathBuf::from(path),
+        }
+    }
+
     async fn store_async(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let checksum = Self::calculate_checksum(data);
+        let checksum = calculate_checksum(data);
         let data_with_checksum = [data, checksum.as_slice()].concat();
 
         let mut file = File::create(&self.path).await?;
         file.write_all(&data_with_checksum).await?;
+        file.flush().await?;
         Ok(())
     }
 
@@ -52,8 +59,8 @@ impl LocalStorage {
         }
 
         let data = &buffer[..buffer.len() - 64];
-        let stored_checksum = Self::retrieve_checksum(&buffer);
-        let calculated_checksum = Self::calculate_checksum(data);
+        let stored_checksum = retrieve_checksum(&buffer);
+        let calculated_checksum = calculate_checksum(data);
 
         if stored_checksum != calculated_checksum {
             return Err("Data integrity check failed!".into());
@@ -70,26 +77,11 @@ impl LocalStorage {
     async fn compaction_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // If file size is greater than 1MB, then compact it
         let metadata = fs::metadata(&self.path).await?;
+        println!("file size {}", metadata.len());
         if metadata.len() > MAX_FILE_SIZE {
             self.delete_async().await?;
         }
         Ok(())
-    }
-
-    fn calculate_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let result = hasher.finalize();
-        let mut checksum = [0u8; 64];
-        checksum.copy_from_slice(hex::encode(result).as_bytes());
-        checksum
-    }
-
-    fn retrieve_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
-        assert!(data.len() >= CHECKSUM_LEN);
-        let mut op = [0; 64];
-        op.copy_from_slice(&data[data.len() - CHECKSUM_LEN..]);
-        op
     }
 }
 
@@ -123,16 +115,111 @@ impl Storage for LocalStorage {
     }
 }
 
+/// This function computes the SHA-256 hash of the given byte slice and returns
+/// a fixed-size array of bytes (`[u8; CHECKSUM_LEN]`).
+/// The resulting checksum is encoded in hexadecimal format.
+fn calculate_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    let mut checksum = [0u8; 64];
+    checksum.copy_from_slice(hex::encode(result).as_bytes());
+    checksum
+}
+
+/// Helper function to extract the checksum from the end of a given byte slice.
+/// It assumes that the checksum is of a fixed length `CHECKSUM_LEN` and is located
+/// at the end of the provided data slice.
+///
+/// This function will panic if the length of the provided data slice is less than `CHECKSUM_LEN`.
+fn retrieve_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
+    assert!(data.len() >= CHECKSUM_LEN);
+    let mut op = [0; 64];
+    op.copy_from_slice(&data[data.len() - CHECKSUM_LEN..]);
+    op
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+    use std::time::Duration;
 
-    #[test]
-    fn test_calculate_checksum() {
-        unimplemented!()
-    }
+    use tempfile::NamedTempFile;
+
+    use crate::storage::{
+        calculate_checksum, CHECKSUM_LEN, LocalStorage, retrieve_checksum, Storage,
+    };
 
     #[test]
     fn test_retrieve_checksum() {
-        unimplemented!()
+        let data_str = "Some data followed by a checksum".as_bytes();
+        let calculated_checksum = calculate_checksum(data_str);
+
+        let data = [data_str, calculated_checksum.as_slice()].concat();
+
+        let retrieved_checksum = retrieve_checksum(&data);
+        assert_eq!(calculated_checksum, retrieved_checksum);
+    }
+
+    #[tokio::test]
+    async fn test_store_async() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let payload_data = "Some data to test raft".as_bytes();
+        let store_result = storage.store(payload_data).await;
+        assert!(store_result.is_ok());
+
+        // Sleeping in assumption to that data OS file buffer will be flushed
+        // but this is un deterministic
+        // FIXME: Make it more reliable
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let mut buffer = vec![];
+        tmp_file.read_to_end(&mut buffer).unwrap();
+
+        assert_eq!(payload_data.len() + CHECKSUM_LEN, buffer.len());
+
+        let data = &buffer[..buffer.len() - CHECKSUM_LEN];
+        assert_eq!(payload_data, data);
+    }
+
+    #[tokio::test]
+    async fn test_delete() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let delete_result = storage.delete().await;
+        assert!(delete_result.is_ok());
+        assert!(!tmp_file.path().exists());
+    }
+
+    #[tokio::test]
+    async fn test_compaction_file_lt_max_file_size() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        let mut storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let mock_data = vec![0u8; 1_000_000 /*1 MB*/  - 500];
+        let store_result = storage.store(&mock_data).await;
+
+        // Assuming that OS file buffer is flushed to disk in
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let compaction_result = storage.compaction().await;
+        assert!(compaction_result.is_ok());
+
+        assert!(tmp_file.path().exists());
+    }
+
+    #[tokio::test]
+    async fn test_compaction_file_gt_max_file_size() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let mock_data = vec![0u8; 1_000_000 /*1 MB*/];
+        let store_result = storage.store(&mock_data).await;
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let compaction_result = storage.compaction().await;
+        assert!(compaction_result.is_ok());
+
+        assert!(!tmp_file.path().exists());
     }
 }
