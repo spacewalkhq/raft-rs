@@ -2,11 +2,12 @@
 // Organization: SpacewalkHq
 // License: MIT License
 
+use std::error::Error;
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use hex;
 use sha2::{Digest, Sha256};
-use std::error::Error;
-use std::path::{Path, PathBuf};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -36,15 +37,13 @@ impl LocalStorage {
         let checksum = Self::calculate_checksum(data);
         let data_with_checksum = [data, checksum.as_slice()].concat();
 
-        let path = Path::new(&self.path);
-        let mut file = File::create(&path).await?;
+        let mut file = File::create(&self.path).await?;
         file.write_all(&data_with_checksum).await?;
         Ok(())
     }
 
     async fn retrieve_async(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        let path = Path::new(&self.path);
-        let mut file = File::open(&path).await?;
+        let mut file = File::open(&self.path).await?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
@@ -64,15 +63,13 @@ impl LocalStorage {
     }
 
     async fn delete_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let path = Path::new(&self.path);
-        fs::remove_file(path).await?;
+        fs::remove_file(&self.path).await?;
         Ok(())
     }
 
     async fn compaction_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // If file size is greater than 1MB, then compact it
-        let path = Path::new(&self.path);
-        let metadata = fs::metadata(path).await?;
+        let metadata = fs::metadata(&self.path).await?;
         if metadata.len() > MAX_FILE_SIZE {
             self.delete_async().await?;
         }
@@ -124,9 +121,8 @@ impl Storage for LocalStorage {
     async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Check if the file is tampered with
         let data = self.retrieve().await?;
+        let metadata = fs::metadata(&self.path).await?;
         let checksum = Self::retrieve_checksum(&data);
-        let path = Path::new(&self.path);
-        let metadata = fs::metadata(path).await?;
 
         if metadata.len() > MAX_FILE_SIZE || checksum != Self::calculate_checksum(&data) {
             return Err("File is potentially malicious".into());
