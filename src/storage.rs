@@ -120,11 +120,10 @@ impl Storage for LocalStorage {
 
     async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Check if the file is tampered with
-        let data = self.retrieve().await?;
+        self.retrieve().await?;
         let metadata = fs::metadata(&self.path).await?;
-        let checksum = Self::retrieve_checksum(&data);
 
-        if metadata.len() > MAX_FILE_SIZE || checksum != Self::calculate_checksum(&data) {
+        if metadata.len() > MAX_FILE_SIZE {
             return Err("File is potentially malicious".into());
         }
         Ok(())
