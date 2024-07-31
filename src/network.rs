@@ -114,7 +114,6 @@ impl NetworkLayer for TCPManager {
         let listener = TcpListener::bind(addr).await?;
         *self.listener.lock().await = Some(listener);
         *is_open = true;
-        println!("Listening on {}", addr);
         Ok(())
     }
 
@@ -126,7 +125,6 @@ impl NetworkLayer for TCPManager {
         }
         *self.listener.lock().await = None;
         *is_open = false;
-        println!("Listener closed");
         Ok(())
     }
 }
@@ -156,34 +154,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_closed_connection() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8082);
+        let network = TCPManager::new(LOCALHOST.to_string(), 8020);
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
-        let _ = tokio::spawn(async move {
+        tokio::spawn(async move {
             let _ = network_clone.receive().await.unwrap();
         });
 
-        let send_result = network.send(LOCALHOST, "8083", &data).await;
+        let send_result = network.send(LOCALHOST, "8021", &data).await;
         assert!(send_result.is_err());
     }
 
     #[tokio::test]
     async fn test_receive_happy_case() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8082);
+        let network = TCPManager::new(LOCALHOST.to_string(), 8030);
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
         let handler = tokio::spawn(async move { network_clone.receive().await.unwrap() });
 
-        network.send(LOCALHOST, "8082", &data).await.unwrap();
+        network.send(LOCALHOST, "8030", &data).await.unwrap();
         let rx_data = handler.await.unwrap();
         assert_eq!(rx_data, data)
     }
 
     #[tokio::test]
     async fn test_open() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8081);
+        let network = TCPManager::new(LOCALHOST.to_string(), 8040);
         let status = network.open().await;
         assert!(status.is_ok());
         assert!(*network.is_open.lock().await);
@@ -191,7 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reopen_opened_port() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8081);
+        let network = TCPManager::new(LOCALHOST.to_string(), 8042);
         let status = network.open().await;
         assert!(status.is_ok());
         let another_network = network.clone();
@@ -201,7 +199,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_close() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8081);
+        let network = TCPManager::new(LOCALHOST.to_string(), 8046);
         let _ = network.open().await;
 
         let close_status = network.close().await;
@@ -213,7 +211,7 @@ mod tests {
     async fn test_broadcast_happy_case() {
         let data = vec![1, 2, 3, 4];
         // Node which is about to broadcast data
-        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8081);
+        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8050);
         broadcasting_node.open().await.unwrap();
         assert!(*broadcasting_node.is_open.lock().await);
 
@@ -222,7 +220,7 @@ mod tests {
         // vec to keep track of the address for receiver nodes
         let mut receiver_addresses = vec![];
 
-        for p in 8082..8090 {
+        for p in 8051..8060 {
             // Create a receiver node
             let rx = TCPManager::new(LOCALHOST.to_string(), p);
             receiver_addresses.push(format!("{}:{}", LOCALHOST, p));
@@ -257,7 +255,7 @@ mod tests {
     async fn test_broadcast_some_nodes_down() {
         let data = vec![1, 2, 3, 4];
         // Node which is about to broadcast data
-        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8081);
+        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8061);
         broadcasting_node.open().await.unwrap();
         assert!(*broadcasting_node.is_open.lock().await);
 
@@ -265,7 +263,7 @@ mod tests {
         let mut receivers = vec![];
         // vec to keep track of the address for receiver nodes
         let mut receiver_addresses = vec![];
-        for p in 8082..8092 {
+        for p in 8062..8070 {
             // Create a receiver node
             let rx = TCPManager::new(LOCALHOST.to_string(), p);
             receiver_addresses.push(format!("{}:{}", LOCALHOST, p));

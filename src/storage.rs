@@ -54,6 +54,10 @@ impl LocalStorage {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
+        if buffer.is_empty() {
+            return Err("File is empty".into());
+        }
+
         if buffer.len() < CHECKSUM_LEN {
             return Err("File is potentially malicious".into());
         }
@@ -141,12 +145,12 @@ fn retrieve_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
+    use std::io::{Read, Seek, SeekFrom, Write};
 
     use tempfile::NamedTempFile;
 
     use crate::storage::{
-        calculate_checksum, CHECKSUM_LEN, LocalStorage, retrieve_checksum, Storage,
+        calculate_checksum, retrieve_checksum, LocalStorage, Storage, CHECKSUM_LEN,
     };
 
     #[test]
@@ -190,10 +194,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_compaction_file_lt_max_file_size() {
-        let mut tmp_file = NamedTempFile::new().unwrap();
-        let mut storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
         let mock_data = vec![0u8; 1_000_000 /*1 MB*/  - 500];
         let store_result = storage.store(&mock_data).await;
+        assert!(store_result.is_ok());
 
         tmp_file.as_file().sync_all().unwrap();
 
@@ -205,10 +210,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_compaction_file_gt_max_file_size() {
-        let mut tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = NamedTempFile::new().unwrap();
         let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
         let mock_data = vec![0u8; 1_000_000 /*1 MB*/];
         let store_result = storage.store(&mock_data).await;
+        assert!(store_result.is_ok());
 
         tmp_file.as_file().sync_all().unwrap();
 
@@ -216,5 +222,49 @@ mod tests {
         assert!(compaction_result.is_ok());
 
         assert!(!tmp_file.path().exists());
+    }
+
+    #[tokio::test]
+    async fn test_retrieve() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let test_data = "Some mocked data".as_bytes();
+
+        storage.store(test_data).await.unwrap();
+
+        let retrieved_result = storage.retrieve().await;
+        assert!(retrieved_result.is_ok());
+
+        assert_eq!(test_data, retrieved_result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_turned_malicious_file_corrupted() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        storage.store("Java is awesome".as_bytes()).await.unwrap();
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        // corrupt the file
+        tmp_file.seek(SeekFrom::Start(0)).unwrap();
+        tmp_file.write_all("Raft".as_bytes()).unwrap();
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        let result = storage.turned_malicious().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_turned_malicious_happy_case() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        storage.store("Java is awesome".as_bytes()).await.unwrap();
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        let result = storage.turned_malicious().await;
+        assert!(result.is_ok());
     }
 }
