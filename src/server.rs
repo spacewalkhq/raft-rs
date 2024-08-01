@@ -797,13 +797,16 @@ impl Server {
         if self.state.state != RaftState::Leader {
             return;
         }
-        
+
         let node_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let node_ip_address = String::from_utf8(data[8..].to_vec()).unwrap();
 
         if self.config.cluster_nodes.contains(&node_id) {
-            error!(self.log, "Node already exists in the cluster, Ignoring join request.");
+            error!(
+                self.log,
+                "Node already exists in the cluster, Ignoring join request."
+            );
             return;
         }
 
@@ -813,7 +816,9 @@ impl Server {
         }
 
         self.config.cluster_nodes.push(node_id);
-        self.config.id_to_address_mapping.insert(node_id, node_ip_address);
+        self.config
+            .id_to_address_mapping
+            .insert(node_id, node_ip_address);
 
         let mut response = [
             self.id.to_be_bytes(),
@@ -823,7 +828,7 @@ impl Server {
         .concat();
         response.extend_from_slice(&self.state.commit_index.to_be_bytes());
         response.extend_from_slice(&self.state.previous_log_index.to_be_bytes());
-        response.extend_from_slice(&self.peers.len().to_be_bytes());  
+        response.extend_from_slice(&self.peers.len().to_be_bytes());
 
         let peer_address = self.config.id_to_address_mapping.get(&node_id).unwrap();
         let (peer_ip, peer_port) = parse_ip_address(peer_address);
@@ -833,7 +838,7 @@ impl Server {
             .await
         {
             error!(self.log, "Failed to send join response: {}", e);
-        }             
+        }
     }
 
     async fn handle_join_response(&mut self, data: &[u8]) {
@@ -871,8 +876,11 @@ impl Server {
         {
             error!(self.log, "Failed to send repair request: {}", e);
         }
-        
-        info!(self.log, "Joined the cluster with leader: {}, own id: {}", leader_id, self.id);
+
+        info!(
+            self.log,
+            "Joined the cluster with leader: {}, own id: {}", leader_id, self.id
+        );
     }
 
     async fn persist_to_disk(&mut self, id: u32, data: &[u8]) {
