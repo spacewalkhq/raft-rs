@@ -36,8 +36,6 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 - [ ] Implement dynamic cluster membership changes
 - [ ] Deterministic Simulation Testing
 - [ ] Benchmarking
-- [ ] Update to the latest version of Rust and Dependencies 
-- [ ] Cargo clippy and cargo fmt integration
 
 
 ## How to Run the Project
