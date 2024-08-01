@@ -21,24 +21,21 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 - [x] Leadership preference
 - [x] Log compaction
 - [x] Tigerbeetle style replica repair
+- [x] Dynamic cluster membership changes support
 
 ## To-Do
 - [ ] Production-ready
 - [ ] Test replica repair thoroughly
+- [ ] Test for dynamic cluster membership changes
 - [ ] io_uring support
-- [ ] CI integration improvements
 - [ ] Complete batch write implementation
 - [ ] Improve Log compaction
 - [ ] Improve error handling
 - [ ] RDMA support
 - [ ] Add more comprehensive tests
 - [ ] Enhance documentation
-- [ ] Implement dynamic cluster membership changes
 - [ ] Deterministic Simulation Testing
 - [ ] Benchmarking
-- [ ] Update to the latest version of Rust and Dependencies 
-- [ ] Cargo clippy and cargo fmt integration
-
 
 ## How to Run the Project
 1. Ensure you have Rust installed. If not, follow the instructions [here](https://www.rust-lang.org/tools/install).

@@ -1,7 +1,12 @@
+// organization : SpacewalkHq
+// License : MIT License
+
+use crate::log::get_logger;
 use crate::network::{NetworkLayer, TCPManager};
 use crate::parse_ip_address;
 use crate::storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
+use slog::{error, info, o};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
@@ -25,6 +30,9 @@ enum MesageType {
     ClientResponse,
     RepairRequest,
     RepairResponse,
+    // dynamic membership changes
+    JoinRequest,
+    JoinResponse,
 }
 
 #[derive(Debug)]
@@ -81,10 +89,16 @@ pub struct Server {
     write_buffer: Vec<LogEntry>,
     debounce_timer: Instant,
     storage: LocalStorage,
+    log: slog::Logger,
 }
 
 impl Server {
     pub fn new(id: u32, config: ServerConfig) -> Server {
+        let log = get_logger();
+        let log = log.new(
+            o!("address" => config.address.clone(), "port" => config.port, "leader" => config.default_leader.unwrap_or(1), "id" => id),
+        );
+
         let peers: Vec<u32> = config
             .cluster_nodes
             .iter()
@@ -104,7 +118,7 @@ impl Server {
             last_heartbeat: Instant::now(),
             votes_received: HashMap::new(),
         };
-        let network_manager = TCPManager::new(config.address.clone(), config.port);
+        let network_manager = TCPManager::new(config.address.clone(), config.port, log.clone());
 
         // if storage location is provided, use it else set empty string to use default location
         let storage = match config.storage_location.clone() {
@@ -121,18 +135,19 @@ impl Server {
             write_buffer: Vec::new(),
             debounce_timer: Instant::now(),
             storage,
+            log,
         }
     }
 
     pub async fn start(&mut self) {
         if let Err(e) = self.network_manager.open().await {
-            eprintln!("Failed to open network manager: {}", e);
+            error!(self.log, "Failed to open network manager: {}", e);
             return;
         }
 
         // there should be atleast 3 peers to form a quorum
         if self.peers.len() < 2 {
-            eprintln!("At least 3 peers are required to form a quorum");
+            error!(self.log, "At least 3 peers are required to form a quorum");
             return;
         }
 
@@ -157,13 +172,19 @@ impl Server {
                     break;
                 }
                 let log_entry = self.deserialize_log_entries(entry);
-                println!("Log entry from disk: {:?}", log_entry);
                 if log_entry.term > self.state.current_term {
                     self.state.current_term = log_entry.term;
                 }
                 self.state.log.push_front(log_entry);
             }
-            println!("Log after reading from disk: {:?}", self.state.log);
+            info!(
+                self.log,
+                "Log after reading from disk: {:?}", self.state.log
+            );
+            info!(
+                self.log,
+                "Log after reading from disk: {:?}", self.state.log
+            );
         } else {
             // Data integrity check failed
             if log_byte
@@ -171,11 +192,11 @@ impl Server {
                 .to_string()
                 .contains("Data integrity check failed")
             {
-                eprintln!("Data integrity check failed");
+                error!(self.log, "Data integrity check failed");
                 // try repair the log from other peers
                 // step1 delete the log file
                 if let Err(e) = self.storage.delete().await {
-                    eprintln!("Failed to delete log file: {}", e);
+                    error!(self.log, "Failed to delete log file: {}", e);
                 }
 
                 // step2 get the log from other peers
@@ -200,13 +221,13 @@ impl Server {
                 let _ = self.network_manager.broadcast(&data, addresses).await;
                 return;
             }
-            println!("No log entries found on disk");
+            info!(self.log, "No log entries found on disk");
         }
 
         self.state.match_index = vec![0; self.peers.len() + 1];
         self.state.next_index = vec![0; self.peers.len() + 1];
 
-        println!("Server {} is a follower", self.id);
+        info!(self.log, "Server {} is a follower", self.id);
         // default leader
         if self.state.current_term == 0 {
             self.state.current_term += 1;
@@ -242,7 +263,7 @@ impl Server {
         if self.state.state != RaftState::Candidate {
             return;
         }
-        println!("Server {} is a candidate", self.id);
+        info!(self.log, "Server {} is a candidate", self.id);
         self.state.last_heartbeat = Instant::now(); // reset election timeout
 
         self.state.current_term += 1;
@@ -277,7 +298,7 @@ impl Server {
             tokio::select! {
                 _ = timeout_future => {
                     if Instant::now().duration_since(self.state.last_heartbeat) >= timeout_duration {
-                        println!("Election timeout");
+                        info!(self.log, "Election timeout");
                         self.state.state = RaftState::Follower;
                         self.state.votes_received.clear();
                         break;
@@ -285,7 +306,7 @@ impl Server {
                 }
                 _ = rpc_future => {
                     if self.is_quorum(self.state.votes_received.len() as u32) {
-                        println!("Quorum reached");
+                        info!(self.log, "Quorum reached");
                         self.state.state = RaftState::Leader;
                         break;
                     }
@@ -305,8 +326,8 @@ impl Server {
         if self.state.state != RaftState::Leader {
             return;
         }
-        println!("Server {} is the leader", self.id);
-        println!("Leader state: {:?}", self.state);
+        info!(self.log, "Server {} is the leader", self.id);
+        info!(self.log, "Leader state: {:?}", self.state);
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_millis(300));
 
@@ -327,7 +348,7 @@ impl Server {
                     }).collect();
 
                     if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
-                        eprintln!("Failed to send heartbeats: {}", e);
+                        error!(self.log, "Failed to send heartbeats: {}", e);
                     }
                 },
                 _ = rpc_future => {
@@ -348,14 +369,14 @@ impl Server {
                             self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
                         }).collect();
                         if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
-                            eprintln!("Failed to send append batch: {}", e);
+                            error!(self.log, "Failed to send append batch: {}", e);
                         }
 
                         self.write_buffer.clear();
                         self.debounce_timer = Instant::now();
                     }
 
-                    println!("Leader state: {:?}", self.state);
+                    info!(self.log, "Leader state: {:?}", self.state);
                 },
             }
         }
@@ -421,6 +442,8 @@ impl Server {
             7 => MesageType::ClientResponse,
             8 => MesageType::RepairRequest,
             9 => MesageType::RepairResponse,
+            10 => MesageType::JoinRequest,
+            11 => MesageType::JoinResponse,
             _ => return,
         };
 
@@ -448,21 +471,26 @@ impl Server {
             }
             MesageType::ClientResponse => {
                 // TODO: get implementation from user based on the application
-                println!("Received client response: {:?}", data);
+                info!(self.log, "Received client response: {:?}", data);
                 let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
                 if data == 1 {
-                    println!("Consensus reached!");
+                    info!(self.log, "Consensus reached!");
                 } else {
-                    println!("Consensus not reached!");
+                    info!(self.log, "Consensus not reached!");
                 }
             }
             MesageType::RepairRequest => {
-                // TODO: get implementation from user based on the application
-                println!("Received repair request: {:?}", data);
+                self.handle_repair_request(&data).await;
             }
             MesageType::RepairResponse => {
-                // TODO: get implementation from user based on the application
-                println!("Received repair response: {:?}", data);
+                self.handle_repair_response(&data).await;
+            }
+            MesageType::JoinRequest => {
+                info!(self.log, "Received join request: {:?}", data);
+                self.handle_join_request(&data).await;
+            }
+            MesageType::JoinResponse => {
+                self.handle_join_response(&data).await;
             }
         }
     }
@@ -482,7 +510,7 @@ impl Server {
             command,
             data,
         };
-        println!("Received client request: {:?}", entry);
+        info!(self.log, "Received client request: {:?}", entry);
         self.write_buffer.push(entry.clone());
 
         self.state.log.push_front(entry);
@@ -511,7 +539,7 @@ impl Server {
         let candidate_address = self.config.id_to_address_mapping.get(&candidate_id);
         if candidate_address.is_none() {
             // no dynamic membership changes
-            println!("Candidate address not found");
+            info!(self.log, "Candidate address not found");
             return;
         }
 
@@ -530,7 +558,7 @@ impl Server {
             .send(candidate_ip, candidate_port, &data)
             .await;
         if let Err(e) = voteresponse {
-            eprintln!("Failed to send vote response: {}", e);
+            error!(self.log, "Failed to send vote response: {}", e);
         }
     }
 
@@ -553,7 +581,7 @@ impl Server {
         }
 
         self.state.votes_received.insert(voter_id, vote_granted);
-        println!("Votes received: {:?}", self.state.votes_received);
+        info!(self.log, "Votes received: {:?}", self.state.votes_received);
     }
 
     async fn handle_append_entries(&mut self, data: Vec<u8>) {
@@ -613,13 +641,16 @@ impl Server {
         .concat();
         let leader_address = self.config.id_to_address_mapping.get(&id).unwrap();
         let (leader_ip, leader_port) = parse_ip_address(leader_address);
-        println!("Sending append entries response to leader: {}", id);
+        info!(
+            self.log,
+            "Sending append entries response to leader: {}", id
+        );
         if let Err(e) = self
             .network_manager
             .send(leader_ip, leader_port, &response)
             .await
         {
-            eprintln!("Failed to send append entries response: {}", e);
+            info!(self.log, "Failed to send append entries response: {}", e);
         }
     }
 
@@ -632,9 +663,12 @@ impl Server {
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let success = u32::from_be_bytes(data[12..16].try_into().unwrap()) == 1;
 
-        println!(
+        info!(
+            self.log,
             "Append entries response from peer: {} with term: {} and success: {}",
-            sender_id, term, success
+            sender_id,
+            term,
+            success
         );
 
         if term > self.state.current_term {
@@ -669,11 +703,11 @@ impl Server {
                     )
                     .await
                 {
-                    eprintln!("Failed to send client response: {}", e);
+                    error!(self.log, "Failed to send client response: {}", e);
                 }
-                println!(
-                    "Quorum decision reached to commit index: {}",
-                    self.state.commit_index
+                info!(
+                    self.log,
+                    "Quorum decision reached to commit index: {}", self.state.commit_index
                 );
             }
         } else {
@@ -692,13 +726,16 @@ impl Server {
         // Noop
     }
 
-    #[allow(dead_code)]
     async fn handle_repair_request(&mut self, data: &[u8]) {
+        if self.state.state != RaftState::Follower || self.state.state != RaftState::Leader {
+            return;
+        }
+
         let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
 
         let log_byte = self.storage.retrieve().await;
         if log_byte.is_err() {
-            eprintln!("Failed to retrieve log entries from disk");
+            error!(self.log, "Failed to retrieve log entries from disk");
             return;
         }
 
@@ -712,7 +749,6 @@ impl Server {
             repair_data.extend_from_slice(entry);
         }
 
-        // send log entries to peer
         let mut response = [
             self.id.to_be_bytes(),
             self.state.current_term.to_be_bytes(),
@@ -732,13 +768,17 @@ impl Server {
             .send(peer_ip, peer_port, &response)
             .await
         {
-            eprintln!("Failed to send repair response: {}", e);
+            error!(self.log, "Failed to send repair response: {}", e);
         }
     }
 
-    #[allow(dead_code)]
     async fn handle_repair_response(&mut self, data: &[u8]) {
+        if self.state.state != RaftState::Leader {
+            return;
+        }
+
         if self.storage.turned_malicious().await.is_err() {
+            self.state.state = RaftState::Follower;
             return;
         }
 
@@ -749,20 +789,110 @@ impl Server {
 
         let log_entries = data[16..].to_vec();
         if let Err(e) = self.storage.store(&log_entries).await {
-            eprintln!("Failed to store log entries to disk: {}", e);
+            error!(self.log, "Failed to store log entries to disk: {}", e);
         }
     }
 
-    async fn persist_to_disk(&mut self, id: u32, data: &[u8]) {
-        println!(
-            "Persisting logs to disk from peer: {} to server: {}",
-            id, self.id
+    async fn handle_join_request(&mut self, data: &[u8]) {
+        if self.state.state != RaftState::Leader {
+            return;
+        }
+
+        let node_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+        let node_ip_address = String::from_utf8(data[8..].to_vec()).unwrap();
+
+        if self.config.cluster_nodes.contains(&node_id) {
+            error!(
+                self.log,
+                "Node already exists in the cluster, Ignoring join request."
+            );
+            return;
+        }
+
+        if term != 0 {
+            error!(self.log, "Invalid term for join request, term should be 0.");
+            return;
+        }
+
+        self.config.cluster_nodes.push(node_id);
+        self.config
+            .id_to_address_mapping
+            .insert(node_id, node_ip_address);
+
+        let mut response = [
+            self.id.to_be_bytes(),
+            self.state.current_term.to_be_bytes(),
+            11u32.to_be_bytes(),
+        ]
+        .concat();
+        response.extend_from_slice(&self.state.commit_index.to_be_bytes());
+        response.extend_from_slice(&self.state.previous_log_index.to_be_bytes());
+        response.extend_from_slice(&self.peers.len().to_be_bytes());
+
+        let peer_address = self.config.id_to_address_mapping.get(&node_id).unwrap();
+        let (peer_ip, peer_port) = parse_ip_address(peer_address);
+        if let Err(e) = self
+            .network_manager
+            .send(peer_ip, peer_port, &response)
+            .await
+        {
+            error!(self.log, "Failed to send join response: {}", e);
+        }
+    }
+
+    async fn handle_join_response(&mut self, data: &[u8]) {
+        if self.state.state != RaftState::Follower {
+            return;
+        }
+
+        let leader_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let current_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+        let commit_index = u32::from_be_bytes(data[8..12].try_into().unwrap());
+        let previous_log_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
+        let peers_count = u32::from_be_bytes(data[16..].try_into().unwrap());
+
+        self.state.current_term = current_term;
+        self.state.commit_index = commit_index;
+        self.state.previous_log_index = previous_log_index;
+
+        self.peers.clear();
+        for i in 0..peers_count {
+            self.peers.push(i);
+        }
+
+        let request_data = [
+            self.id.to_be_bytes(),
+            self.state.current_term.to_be_bytes(),
+            8u32.to_be_bytes(),
+        ]
+        .concat();
+        let leader_address = self.config.id_to_address_mapping.get(&leader_id).unwrap();
+        let (leader_ip, leader_port) = parse_ip_address(leader_address);
+        if let Err(e) = self
+            .network_manager
+            .send(leader_ip, leader_port, &request_data)
+            .await
+        {
+            error!(self.log, "Failed to send repair request: {}", e);
+        }
+
+        info!(
+            self.log,
+            "Joined the cluster with leader: {}, own id: {}", leader_id, self.id
         );
-        println!("Data: {:?}", data);
+    }
+
+    async fn persist_to_disk(&mut self, id: u32, data: &[u8]) {
+        info!(
+            self.log,
+            "Persisting logs to disk from peer: {} to server: {}", id, self.id
+        );
+        info!(self.log, "Data: {:?}", data);
 
         // Log Compaction
         if let Err(e) = self.storage.compaction().await {
-            eprintln!("Failed to do compaction on disk: {}", e);
+            error!(self.log, "Failed to do compaction on disk: {}", e);
         }
 
         if self.state.state == RaftState::Follower {
@@ -771,15 +901,15 @@ impl Server {
             self.state.log.push_front(log_entry);
         }
         if let Err(e) = self.storage.store(data).await {
-            eprintln!("Failed to store log entry to disk: {}", e);
+            error!(self.log, "Failed to store log entry to disk: {}", e);
         }
 
-        println!("Log after appending: {:?}", self.state.log);
+        info!(self.log, "Log after appending: {:?}", self.state.log);
     }
 
     fn deserialize_log_entries(&self, data: &[u8]) -> LogEntry {
         // convert data to logEntry using bincode
-        println!("Deserializing log entry: {:?}", data);
+        info!(self.log, "Deserializing log entry: {:?}", data);
         bincode::deserialize(data).unwrap()
     }
 
@@ -790,7 +920,7 @@ impl Server {
     #[allow(dead_code)]
     async fn stop(&self) {
         if let Err(e) = self.network_manager.close().await {
-            eprintln!("Failed to close network manager: {}", e);
+            error!(self.log, "Failed to close network manager: {}", e);
         }
     }
 }

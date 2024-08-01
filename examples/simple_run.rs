@@ -4,6 +4,8 @@
 
 // make this file executable with `chmod +x examples/simple_run.rs`
 
+use raft_rs::log::get_logger;
+use slog::{error, info};
 use std::collections::HashMap;
 use std::thread;
 use tokio::runtime::Runtime;
@@ -60,8 +62,10 @@ async fn main() {
 }
 
 async fn client_request(client_id: u32, data: u32) {
+    let log = get_logger();
+
     let server_address = "127.0.0.1"; // Assuming server 1 is the leader
-    let network_manager = TCPManager::new(server_address.to_string(), 5001);
+    let network_manager = TCPManager::new(server_address.to_string(), 5001, log.clone());
 
     let request_data = vec![
         client_id.to_be_bytes().to_vec(),
@@ -75,12 +79,12 @@ async fn client_request(client_id: u32, data: u32) {
         .send(server_address, "5001", &request_data)
         .await
     {
-        eprintln!("Failed to send client request: {}", e);
+        error!(log, "Failed to send client request: {}", e);
     }
 
     // sleep for a while to allow the server to process the request
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     let response = network_manager.receive().await.unwrap();
-    println!("Received response: {:?}", response);
+    info!(log, "Received response: {:?}", response);
 }
