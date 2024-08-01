@@ -1,13 +1,17 @@
 // Organization: SpacewalkHq
 // License: MIT License
 
+use std::error::Error;
+use std::path::{Path, PathBuf};
+
 use async_trait::async_trait;
 use hex;
 use sha2::{Digest, Sha256};
-use std::error::Error;
-use std::path::Path;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const MAX_FILE_SIZE: u64 = 1_000_000;
+const CHECKSUM_LEN: usize = 64;
 
 #[async_trait]
 pub trait Storage {
@@ -18,34 +22,48 @@ pub trait Storage {
     async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
+#[derive(Clone)]
 pub struct LocalStorage {
-    path: String,
+    path: PathBuf,
 }
 
 impl LocalStorage {
     pub fn new(path: String) -> Self {
-        LocalStorage { path }
+        LocalStorage { path: path.into() }
+    }
+
+    pub fn new_from_path(path: &Path) -> Self {
+        LocalStorage {
+            path: PathBuf::from(path),
+        }
     }
 
     async fn store_async(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let checksum = Self::calculate_checksum(data);
-        let data_with_checksum = [data, checksum.as_bytes()].concat();
+        let checksum = calculate_checksum(data);
+        let data_with_checksum = [data, checksum.as_slice()].concat();
 
-        let path = Path::new(&self.path);
-        let mut file = File::create(&path).await?;
+        let mut file = File::create(&self.path).await?;
         file.write_all(&data_with_checksum).await?;
+        file.flush().await?;
         Ok(())
     }
 
     async fn retrieve_async(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        let path = Path::new(&self.path);
-        let mut file = File::open(&path).await?;
+        let mut file = File::open(&self.path).await?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
+        if buffer.is_empty() {
+            return Err("File is empty".into());
+        }
+
+        if buffer.len() < CHECKSUM_LEN {
+            return Err("File is potentially malicious".into());
+        }
+
         let data = &buffer[..buffer.len() - 64];
-        let stored_checksum = String::from_utf8(buffer[buffer.len() - 64..].to_vec())?;
-        let calculated_checksum = Self::calculate_checksum(data);
+        let stored_checksum = retrieve_checksum(&buffer);
+        let calculated_checksum = calculate_checksum(data);
 
         if stored_checksum != calculated_checksum {
             return Err("Data integrity check failed!".into());
@@ -55,73 +73,197 @@ impl LocalStorage {
     }
 
     async fn delete_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let path = Path::new(&self.path);
-        fs::remove_file(path).await?;
+        fs::remove_file(&self.path).await?;
         Ok(())
     }
 
     async fn compaction_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // If file size is greater than 1MB, then compact it
-        let path = Path::new(&self.path);
-        let metadata = fs::metadata(path).await?;
-        if metadata.len() > 1_000_000 {
+        let metadata = fs::metadata(&self.path).await?;
+        println!("file size {}", metadata.len());
+        if metadata.len() > MAX_FILE_SIZE {
             self.delete_async().await?;
         }
         Ok(())
-    }
-
-    fn calculate_checksum(data: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let result = hasher.finalize();
-        hex::encode(result)
     }
 }
 
 #[async_trait]
 impl Storage for LocalStorage {
     async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let data = data.to_vec();
-        let storage = self.clone();
-        tokio::spawn(async move { storage.store_async(&data).await }).await??;
-        Ok(())
+        self.store_async(data).await
     }
 
     async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        let storage = self.clone();
-        tokio::spawn(async move { storage.retrieve_async().await }).await?
+        self.retrieve_async().await
     }
 
     async fn compaction(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let storage = self.clone();
-        tokio::spawn(async move { storage.compaction_async().await }).await??;
-        Ok(())
+        self.compaction_async().await
     }
 
     async fn delete(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let storage = self.clone();
-        tokio::spawn(async move { storage.delete_async().await }).await??;
-        Ok(())
+        self.delete_async().await
     }
 
     async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         // Check if the file is tampered with
-        let data = self.retrieve().await?;
-        let checksum = Self::calculate_checksum(&data);
-        let path = Path::new(&self.path);
-        let metadata = fs::metadata(path).await?;
+        self.retrieve().await?;
+        let metadata = fs::metadata(&self.path).await?;
 
-        if metadata.len() > 1_000_000 || checksum != Self::calculate_checksum(&data) {
+        if metadata.len() > MAX_FILE_SIZE {
             return Err("File is potentially malicious".into());
         }
         Ok(())
     }
 }
 
-impl Clone for LocalStorage {
-    fn clone(&self) -> Self {
-        LocalStorage {
-            path: self.path.clone(),
-        }
+/// This function computes the SHA-256 hash of the given byte slice and returns
+/// a fixed-size array of bytes (`[u8; CHECKSUM_LEN]`).
+/// The resulting checksum is encoded in hexadecimal format.
+fn calculate_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    let mut checksum = [0u8; 64];
+    checksum.copy_from_slice(hex::encode(result).as_bytes());
+    checksum
+}
+
+/// Helper function to extract the checksum from the end of a given byte slice.
+/// It assumes that the checksum is of a fixed length `CHECKSUM_LEN` and is located
+/// at the end of the provided data slice.
+///
+/// This function will panic if the length of the provided data slice is less than `CHECKSUM_LEN`.
+fn retrieve_checksum(data: &[u8]) -> [u8; CHECKSUM_LEN] {
+    assert!(data.len() >= CHECKSUM_LEN);
+    let mut op = [0; 64];
+    op.copy_from_slice(&data[data.len() - CHECKSUM_LEN..]);
+    op
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    use tempfile::NamedTempFile;
+
+    use crate::storage::{
+        calculate_checksum, retrieve_checksum, LocalStorage, Storage, CHECKSUM_LEN,
+    };
+
+    #[test]
+    fn test_retrieve_checksum() {
+        let data_str = "Some data followed by a checksum".as_bytes();
+        let calculated_checksum = calculate_checksum(data_str);
+
+        let data = [data_str, calculated_checksum.as_slice()].concat();
+
+        let retrieved_checksum = retrieve_checksum(&data);
+        assert_eq!(calculated_checksum, retrieved_checksum);
+    }
+
+    #[tokio::test]
+    async fn test_store_async() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let payload_data = "Some data to test raft".as_bytes();
+        let store_result = storage.store(payload_data).await;
+        assert!(store_result.is_ok());
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        let mut buffer = vec![];
+        tmp_file.read_to_end(&mut buffer).unwrap();
+
+        assert_eq!(payload_data.len() + CHECKSUM_LEN, buffer.len());
+
+        let data = &buffer[..buffer.len() - CHECKSUM_LEN];
+        assert_eq!(payload_data, data);
+    }
+
+    #[tokio::test]
+    async fn test_delete() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let delete_result = storage.delete().await;
+        assert!(delete_result.is_ok());
+        assert!(!tmp_file.path().exists());
+    }
+
+    #[tokio::test]
+    async fn test_compaction_file_lt_max_file_size() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let mock_data = vec![0u8; 1_000_000 /*1 MB*/  - 500];
+        let store_result = storage.store(&mock_data).await;
+        assert!(store_result.is_ok());
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        let compaction_result = storage.compaction().await;
+        assert!(compaction_result.is_ok());
+
+        assert!(tmp_file.path().exists());
+    }
+
+    #[tokio::test]
+    async fn test_compaction_file_gt_max_file_size() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let mock_data = vec![0u8; 1_000_000 /*1 MB*/];
+        let store_result = storage.store(&mock_data).await;
+        assert!(store_result.is_ok());
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        let compaction_result = storage.compaction().await;
+        assert!(compaction_result.is_ok());
+
+        assert!(!tmp_file.path().exists());
+    }
+
+    #[tokio::test]
+    async fn test_retrieve() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        let test_data = "Some mocked data".as_bytes();
+
+        storage.store(test_data).await.unwrap();
+
+        let retrieved_result = storage.retrieve().await;
+        assert!(retrieved_result.is_ok());
+
+        assert_eq!(test_data, retrieved_result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_turned_malicious_file_corrupted() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        storage.store("Java is awesome".as_bytes()).await.unwrap();
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        // corrupt the file
+        tmp_file.seek(SeekFrom::Start(0)).unwrap();
+        tmp_file.write_all("Raft".as_bytes()).unwrap();
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        let result = storage.turned_malicious().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_turned_malicious_happy_case() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let storage: Box<dyn Storage> = Box::new(LocalStorage::new_from_path(tmp_file.path()));
+        storage.store("Java is awesome".as_bytes()).await.unwrap();
+
+        tmp_file.as_file().sync_all().unwrap();
+
+        let result = storage.turned_malicious().await;
+        assert!(result.is_ok());
     }
 }

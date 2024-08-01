@@ -1,4 +1,3 @@
-// Author: Vipul Vaibhaw
 // Organization: SpacewalkHq
 // License: MIT License
 
@@ -52,9 +51,9 @@ async fn main() {
     }
 
     // Simulate a client request after some delay
-    thread::sleep(Duration::from_secs(20));
-    client_request(1, 42 as u32).await;
-    thread::sleep(Duration::from_secs(2));
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    client_request(1, 42u32).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     // Join all server threads
     for handle in handles {
         handle.join().unwrap();
@@ -65,7 +64,7 @@ async fn client_request(client_id: u32, data: u32) {
     let log = get_logger();
 
     let server_address = "127.0.0.1"; // Assuming server 1 is the leader
-    let network_manager = TCPManager::new(server_address.to_string(), 5001, log.clone());
+    let network_manager = TCPManager::new(server_address.to_string(), 5001);
 
     let request_data = vec![
         client_id.to_be_bytes().to_vec(),
