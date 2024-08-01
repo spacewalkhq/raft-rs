@@ -4,6 +4,7 @@
 use crate::parse_ip_address;
 use async_trait::async_trait;
 use futures::future::join_all;
+use slog::info;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -35,15 +36,17 @@ pub struct TCPManager {
     port: u16,
     listener: Arc<Mutex<Option<TcpListener>>>,
     is_open: Arc<Mutex<bool>>,
+    log: slog::Logger,
 }
 
 impl TCPManager {
-    pub fn new(address: String, port: u16) -> Self {
+    pub fn new(address: String, port: u16, log: slog::Logger) -> Self {
         TCPManager {
             address,
             port,
             listener: Arc::new(Mutex::new(None)),
             is_open: Arc::new(Mutex::new(false)),
+            log,
         }
     }
 
@@ -113,7 +116,7 @@ impl NetworkLayer for TCPManager {
         let listener = TcpListener::bind(addr).await?;
         *self.listener.lock().await = Some(listener);
         *is_open = true;
-        println!("Listening on {}", addr);
+        info!(self.log, "Listening on {}", addr);
         Ok(())
     }
 
@@ -124,18 +127,27 @@ impl NetworkLayer for TCPManager {
         }
         *self.listener.lock().await = None;
         *is_open = false;
-        println!("Listener closed");
+        info!(self.log, "Listener closed");
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use slog::{o, Drain};
+
     use super::*;
+
+    fn get_logger() -> slog::Logger {
+        let decorator = slog_term::PlainSyncDecorator::new(std::io::stdout());
+        let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        let log = slog::Logger::root(drain, o!());
+        return log;
+    }
 
     #[tokio::test]
     async fn test_send() {
-        let network = TCPManager::new("127.0.0.1".to_string(), 8082);
+        let network = TCPManager::new("127.0.0.1".to_string(), 8082, get_logger());
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
