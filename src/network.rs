@@ -1,4 +1,3 @@
-// author : Vipul Vaibhaw
 // organization : SpacewalkHq
 // License : MIT License
 

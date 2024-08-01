@@ -2,7 +2,7 @@
 name = "raft_rs"
 version = "0.0.1"
 edition = "2021"
-authors = ["Vipul Vaibhaw <vaibhaw.vipul@example.com>"]
+authors = ["Vipul Vaibhaw <vaibhaw.vipul@gmail.com>"]
 description = "A Raft implementation by SpacewalkHq"
 license = "MIT"
 readme = "README.md"
