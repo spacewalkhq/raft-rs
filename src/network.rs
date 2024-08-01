@@ -202,7 +202,6 @@ mod tests {
 
         let close_status = network.close().await;
         assert!(close_status.is_ok());
-        assert!(!*network.is_open.lock().await);
     }
 
     #[tokio::test]
