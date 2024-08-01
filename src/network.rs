@@ -207,21 +207,21 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_happy_case() {
         let data = vec![1, 2, 3, 4];
-        // Node which is about to broadcast data
+        // server which is about to broadcast data
         let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8050);
         broadcasting_node.open().await.unwrap();
         assert!(*broadcasting_node.is_open.lock().await);
 
-        // vec to keep track of all other nodes which should be receiving data
+        // vec to keep track of all other server which should be receiving data
         let mut receivers = vec![];
-        // vec to keep track of the address for receiver nodes
+        // vec to keep track of the address of servers
         let mut receiver_addresses = vec![];
 
         for p in 8051..8060 {
-            // Create a receiver node
+            // create receiver server
             let rx = TCPManager::new(LOCALHOST.to_string(), p);
             receiver_addresses.push(format!("{}:{}", LOCALHOST, p));
-            // Open the connection
+
             rx.open().await.unwrap();
             assert!(*rx.is_open.lock().await);
             receivers.push(rx)
@@ -237,11 +237,11 @@ mod tests {
             });
         }
 
-        // broadcast the data
+        // broadcast the message
         let broadcast_result = broadcasting_node.broadcast(&data, receiver_addresses).await;
         assert!(broadcast_result.is_ok());
 
-        // assert the data received on receiver nodes
+        // assert the data received on servers
         while let Some(res) = s.join_next().await {
             let rx_data = res.unwrap();
             assert_eq!(data, rx_data)
@@ -251,21 +251,22 @@ mod tests {
     #[tokio::test]
     async fn test_broadcast_some_nodes_down() {
         let data = vec![1, 2, 3, 4];
-        // Node which is about to broadcast data
+        // server which is about to broadcast data
         let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8061);
         broadcasting_node.open().await.unwrap();
         assert!(*broadcasting_node.is_open.lock().await);
 
-        // vec to keep track of all other nodes which should be receiving data
+        // vec to keep track of all servers which should be receiving data
         let mut receivers = vec![];
-        // vec to keep track of the address for receiver nodes
+        // vec to keep track of the address
         let mut receiver_addresses = vec![];
         for p in 8062..8070 {
             // Create a receiver node
             let rx = TCPManager::new(LOCALHOST.to_string(), p);
             receiver_addresses.push(format!("{}:{}", LOCALHOST, p));
+            // open connection for half server
+            // mocking rest half to be down
             if p & 1 == 1 {
-                // Open the connection
                 rx.open().await.unwrap();
                 assert!(*rx.is_open.lock().await);
             }
