@@ -9,6 +9,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
@@ -26,6 +28,9 @@ jobs:
   
     - name: Check Linting
       run: cargo clippy -- -D warnings
+    
+    - name: Unit test
+      run: cargo test
 
     - name: Build project
       run: cargo build
