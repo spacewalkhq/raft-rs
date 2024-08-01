@@ -1,4 +1,3 @@
-// author : Vipul Vaibhaw
 // organization : SpacewalkHq
 // License : MIT License
 
@@ -27,7 +26,7 @@ pub trait NetworkLayer: Send + Sync {
         addresses: Vec<String>,
     ) -> Result<(), Box<dyn Error + Send + Sync>>;
     async fn open(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
-    async fn close(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn close(self) -> Result<(), Box<dyn Error + Send + Sync>>;
 }
 
 #[derive(Debug, Clone)]
@@ -117,8 +116,7 @@ impl NetworkLayer for TCPManager {
         Ok(())
     }
 
-    async fn close(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        // FIX: Can we drop the object when we close the connection
+    async fn close(self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut is_open = self.is_open.lock().await;
         if !*is_open {
             return Err("Listener is not open".into());

@@ -19,7 +19,7 @@ enum RaftState {
 }
 
 #[derive(Debug, Clone)]
-enum MesageType {
+enum MessageType {
     RequestVote,
     RequestVoteResponse,
     AppendEntries,
@@ -118,13 +118,14 @@ impl Server {
             last_heartbeat: Instant::now(),
             votes_received: HashMap::new(),
         };
-        let network_manager = TCPManager::new(config.address.clone(), config.port, log.clone());
+        let network_manager = TCPManager::new(config.address.clone(), config.port);
 
         // if storage location is provided, use it else set empty string to use default location
-        let storage = match config.storage_location.clone() {
-            Some(location) => LocalStorage::new(location + &format!("server_{}.log", id)),
-            None => LocalStorage::new(format!("server_{}.log", id)),
+        let storage_location = match config.storage_location.clone() {
+            Some(location) => location + &format!("server_{}.log", id),
+            None => format!("server_{}.log", id),
         };
+        let storage = LocalStorage::new(storage_location);
 
         Server {
             id,
@@ -432,44 +433,44 @@ impl Server {
         }
 
         let message_type = match message_type {
-            0 => MesageType::RequestVote,
-            1 => MesageType::RequestVoteResponse,
-            2 => MesageType::AppendEntries,
-            3 => MesageType::AppendEntriesResponse,
-            4 => MesageType::Heartbeat,
-            5 => MesageType::HeartbeatResponse,
-            6 => MesageType::ClientRequest,
-            7 => MesageType::ClientResponse,
-            8 => MesageType::RepairRequest,
-            9 => MesageType::RepairResponse,
-            10 => MesageType::JoinRequest,
-            11 => MesageType::JoinResponse,
+            0 => MessageType::RequestVote,
+            1 => MessageType::RequestVoteResponse,
+            2 => MessageType::AppendEntries,
+            3 => MessageType::AppendEntriesResponse,
+            4 => MessageType::Heartbeat,
+            5 => MessageType::HeartbeatResponse,
+            6 => MessageType::ClientRequest,
+            7 => MessageType::ClientResponse,
+            8 => MessageType::RepairRequest,
+            9 => MessageType::RepairResponse,
+            10 => MessageType::JoinRequest,
+            11 => MessageType::JoinResponse,
             _ => return,
         };
 
         match message_type {
-            MesageType::RequestVote => {
+            MessageType::RequestVote => {
                 self.handle_request_vote(&data).await;
             }
-            MesageType::RequestVoteResponse => {
+            MessageType::RequestVoteResponse => {
                 self.handle_request_vote_response(&data).await;
             }
-            MesageType::AppendEntries => {
+            MessageType::AppendEntries => {
                 self.handle_append_entries(data).await;
             }
-            MesageType::AppendEntriesResponse => {
+            MessageType::AppendEntriesResponse => {
                 self.handle_append_entries_response(&data).await;
             }
-            MesageType::Heartbeat => {
+            MessageType::Heartbeat => {
                 self.handle_heartbeat().await;
             }
-            MesageType::HeartbeatResponse => {
+            MessageType::HeartbeatResponse => {
                 self.handle_heartbeat_response().await;
             }
-            MesageType::ClientRequest => {
+            MessageType::ClientRequest => {
                 self.handle_client_request(data).await;
             }
-            MesageType::ClientResponse => {
+            MessageType::ClientResponse => {
                 // TODO: get implementation from user based on the application
                 info!(self.log, "Received client response: {:?}", data);
                 let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
@@ -479,17 +480,17 @@ impl Server {
                     info!(self.log, "Consensus not reached!");
                 }
             }
-            MesageType::RepairRequest => {
+            MessageType::RepairRequest => {
                 self.handle_repair_request(&data).await;
             }
-            MesageType::RepairResponse => {
+            MessageType::RepairResponse => {
                 self.handle_repair_response(&data).await;
             }
-            MesageType::JoinRequest => {
+            MessageType::JoinRequest => {
                 info!(self.log, "Received join request: {:?}", data);
                 self.handle_join_request(&data).await;
             }
-            MesageType::JoinResponse => {
+            MessageType::JoinResponse => {
                 self.handle_join_response(&data).await;
             }
         }
@@ -918,7 +919,7 @@ impl Server {
     }
 
     #[allow(dead_code)]
-    async fn stop(&self) {
+    async fn stop(self) {
         if let Err(e) = self.network_manager.close().await {
             error!(self.log, "Failed to close network manager: {}", e);
         }
