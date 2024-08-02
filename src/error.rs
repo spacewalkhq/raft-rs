@@ -1,6 +1,10 @@
+// organization : SpacewalkHq
+// License : MIT License
+
+use std::net::SocketAddr;
 use thiserror::Error;
 
-/// wrapper around library error
+/// wrapper around std library error
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
@@ -18,12 +22,16 @@ pub enum Error {
 
 #[derive(Error, Debug)]
 pub enum NetworkError {
-    #[error("opening connection failed")]
-    OpenConnectionError,
-    #[error("closing connection failed")]
-    CloseConnectionError,
-    #[error("listening on port = {0} failed")]
-    ListenError(u8),
+    #[error("accepting incoming connection failed")]
+    AcceptError,
+    #[error("error connection is closed")]
+    ConnectionClosedError,
+    #[error("connection to {0} failed")]
+    ConnectError(SocketAddr),
+    #[error("failed binding to {0}")]
+    BindError(SocketAddr),
+    #[error("broadcast failed")]
+    BroadcastError,
 }
 
 #[derive(Error, Debug)]
