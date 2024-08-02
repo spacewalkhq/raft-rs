@@ -2,11 +2,11 @@
 // License: MIT License
 
 use raft_rs::log::get_logger;
+use raft_rs::server::{Server, ServerConfig};
+use rand::Rng;
 use slog::{info, warn};
 use std::collections::HashMap;
-use rand::Rng;
 use tokio::time::{sleep, Duration};
-use raft_rs::server::{Server, ServerConfig};
 
 #[tokio::main]
 async fn main() {

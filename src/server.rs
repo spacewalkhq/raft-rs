@@ -290,7 +290,10 @@ impl Server {
                     .clone()
             })
             .collect();
-        info!(self.log, "Starting election, id: {}, term: {}", self.id, self.state.current_term);
+        info!(
+            self.log,
+            "Starting election, id: {}, term: {}", self.id, self.state.current_term
+        );
         let _ = self.network_manager.broadcast(&data, addresses).await;
 
         loop {
@@ -743,13 +746,11 @@ impl Server {
                     self.state.state = RaftState::Follower;
                     self.state.current_term = term;
                 }
+            } else if self.id != self.config.default_leader.unwrap() {
+                self.state.state = RaftState::Follower;
+                self.state.current_term = term;
             } else {
-                if self.id != self.config.default_leader.unwrap() {
-                    self.state.state = RaftState::Follower;
-                    self.state.current_term = term;
-                } else {
-                    self.state.state = RaftState::Leader;
-                }
+                self.state.state = RaftState::Leader;
             }
         }
 
