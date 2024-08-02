@@ -5,6 +5,7 @@ pub mod log;
 pub mod network;
 pub mod server;
 pub mod storage;
+pub mod error;
 
 /// Helper function to parse the IP address delimited by ':' and return tuple of (ip, port)
 fn parse_ip_address(addr: &str) -> (&str, &str) {
