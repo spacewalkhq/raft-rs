@@ -65,5 +65,5 @@ pub enum FileError {
     #[error("removing file failed")]
     RemoveFileError,
     #[error("reading file metadata failed")]
-    MetaDataError
+    MetaDataError,
 }

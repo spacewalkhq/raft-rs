@@ -9,12 +9,11 @@ use sha2::{Digest, Sha256};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::error::{Error, FileError, Result, StorageError};
 use crate::error::StorageError::MaliciousFile;
+use crate::error::{Error, FileError, Result, StorageError};
 
 const MAX_FILE_SIZE: u64 = 1_000_000;
 const CHECKSUM_LEN: usize = 64;
-
 
 #[async_trait]
 pub trait Storage {
@@ -45,16 +44,24 @@ impl LocalStorage {
         let checksum = calculate_checksum(data);
         let data_with_checksum = [data, checksum.as_slice()].concat();
 
-        let mut file = File::create(&self.path).await.map_err(|_e| FileError::CreateError)?;
-        file.write_all(&data_with_checksum).await.map_err(|_x| FileError::WriteError)?;
+        let mut file = File::create(&self.path)
+            .await
+            .map_err(|_e| FileError::CreateError)?;
+        file.write_all(&data_with_checksum)
+            .await
+            .map_err(|_x| FileError::WriteError)?;
         file.flush().await.map_err(|_x| FileError::FlushError)?;
         Ok(())
     }
 
     async fn retrieve_async(&self) -> Result<Vec<u8>> {
-        let mut file = File::open(&self.path).await.map_err(|_x| FileError::OpenError)?;
+        let mut file = File::open(&self.path)
+            .await
+            .map_err(|_x| FileError::OpenError)?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).await.map_err(|_x| FileError::ReadError)?;
+        file.read_to_end(&mut buffer)
+            .await
+            .map_err(|_x| FileError::ReadError)?;
 
         if buffer.is_empty() {
             return Err(Error::Store(StorageError::EmptyFile));
@@ -76,13 +83,17 @@ impl LocalStorage {
     }
 
     async fn delete_async(&self) -> Result<()> {
-        fs::remove_file(&self.path).await.map_err(|_x| FileError::RemoveFileError)?;
+        fs::remove_file(&self.path)
+            .await
+            .map_err(|_x| FileError::RemoveFileError)?;
         Ok(())
     }
 
     async fn compaction_async(&self) -> Result<()> {
         // If file size is greater than 1MB, then compact it
-        let metadata = fs::metadata(&self.path).await.map_err(|_x| FileError::MetaDataError)?;
+        let metadata = fs::metadata(&self.path)
+            .await
+            .map_err(|_x| FileError::MetaDataError)?;
         println!("file size {}", metadata.len());
         if metadata.len() > MAX_FILE_SIZE {
             self.delete_async().await?;
@@ -112,7 +123,9 @@ impl Storage for LocalStorage {
     async fn turned_malicious(&self) -> Result<()> {
         // Check if the file is tampered with
         self.retrieve().await?;
-        let metadata = fs::metadata(&self.path).await.map_err(|_x| FileError::MetaDataError)?;
+        let metadata = fs::metadata(&self.path)
+            .await
+            .map_err(|_x| FileError::MetaDataError)?;
 
         if metadata.len() > MAX_FILE_SIZE {
             return Err(Error::Store(MaliciousFile));

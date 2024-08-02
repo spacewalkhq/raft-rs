@@ -10,25 +10,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-use crate::error::{Error, FileError, NetworkError};
 use crate::error::NetworkError::ConnectionClosedError;
 use crate::error::Result;
+use crate::error::{Error, FileError, NetworkError};
 use crate::parse_ip_address;
 
 #[async_trait]
 pub trait NetworkLayer: Send + Sync {
-    async fn send(
-        &self,
-        address: &str,
-        port: &str,
-        data: &[u8],
-    ) -> Result<()>;
+    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<()>;
     async fn receive(&self) -> Result<Vec<u8>>;
-    async fn broadcast(
-        &self,
-        data: &[u8],
-        addresses: Vec<String>,
-    ) -> Result<()>;
+    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<()>;
     async fn open(&self) -> Result<()>;
     async fn close(self) -> Result<()>;
 }
@@ -51,12 +42,14 @@ impl TCPManager {
         }
     }
 
-    async fn async_send(
-        data: &[u8],
-        address: SocketAddr,
-    ) -> Result<()> {
-        let mut stream = TcpStream::connect(address).await.map_err(|_e| NetworkError::ConnectError(address))?;
-        stream.write_all(data).await.map_err(|_e| FileError::WriteError)?;
+    async fn async_send(data: &[u8], address: SocketAddr) -> Result<()> {
+        let mut stream = TcpStream::connect(address)
+            .await
+            .map_err(|_e| NetworkError::ConnectError(address))?;
+        stream
+            .write_all(data)
+            .await
+            .map_err(|_e| FileError::WriteError)?;
         Ok(())
     }
 
@@ -64,10 +57,16 @@ impl TCPManager {
         let mut data = Vec::new();
         let listener = self.listener.lock().await;
         if let Some(listener) = &*listener {
-            let (mut stream, _) = listener.accept().await.map_err(|_e| NetworkError::AcceptError)?;
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .map_err(|_e| NetworkError::AcceptError)?;
             let mut buffer = Vec::new();
             let mut reader = tokio::io::BufReader::new(&mut stream);
-            reader.read_to_end(&mut buffer).await.map_err(|_e| FileError::ReadError)?;
+            reader
+                .read_to_end(&mut buffer)
+                .await
+                .map_err(|_e| FileError::ReadError)?;
             data = buffer;
         }
         Ok(data)
@@ -76,12 +75,7 @@ impl TCPManager {
 
 #[async_trait]
 impl NetworkLayer for TCPManager {
-    async fn send(
-        &self,
-        address: &str,
-        port: &str,
-        data: &[u8],
-    ) -> Result<()> {
+    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<()> {
         let addr: SocketAddr = format!("{}:{}", address, port).parse().unwrap();
         Self::async_send(data, addr).await?;
         Ok(())
@@ -91,11 +85,7 @@ impl NetworkLayer for TCPManager {
         self.handle_receive().await
     }
 
-    async fn broadcast(
-        &self,
-        data: &[u8],
-        addresses: Vec<String>,
-    ) -> Result<()> {
+    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<()> {
         let futures = addresses.into_iter().map(|address| {
             let (ip, port) = parse_ip_address(&address);
             let addr: SocketAddr = format!("{}:{}", ip, port).parse().unwrap();
@@ -104,7 +94,8 @@ impl NetworkLayer for TCPManager {
         join_all(futures)
             .await
             .into_iter()
-            .collect::<std::result::Result<_, _>>().map_err(|_e| NetworkError::BroadcastError)?;
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_e| NetworkError::BroadcastError)?;
         Ok(())
     }
 
@@ -114,7 +105,9 @@ impl NetworkLayer for TCPManager {
             return Err(Error::Unknown("listener is already open".into()));
         }
         let addr: SocketAddr = format!("{}:{}", self.address, self.port).parse().unwrap();
-        let listener = TcpListener::bind(addr).await.map_err(|_e| NetworkError::BindError(addr))?;
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|_e| NetworkError::BindError(addr))?;
         *self.listener.lock().await = Some(listener);
         *is_open = true;
         Ok(())
