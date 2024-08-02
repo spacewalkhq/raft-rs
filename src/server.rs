@@ -114,7 +114,7 @@ impl Server {
             previous_log_index: 0,
             next_index: vec![0; peers.len()],
             match_index: vec![0; peers.len()],
-            election_timeout: config.election_timeout + Duration::from_secs(2 * id as u64),
+            election_timeout: config.election_timeout + Duration::from_millis(20 * id as u64),
             last_heartbeat: Instant::now(),
             votes_received: HashMap::new(),
         };
@@ -159,6 +159,10 @@ impl Server {
                 RaftState::Leader => self.leader().await,
             }
         }
+    }
+
+    pub fn is_leader(&self) -> bool {
+        self.state.state == RaftState::Leader
     }
 
     async fn follower(&mut self) {
@@ -286,6 +290,7 @@ impl Server {
                     .clone()
             })
             .collect();
+        info!(self.log, "Starting election, id: {}, term: {}", self.id, self.state.current_term);
         let _ = self.network_manager.broadcast(&data, addresses).await;
 
         loop {
@@ -308,6 +313,7 @@ impl Server {
                 _ = rpc_future => {
                     if self.is_quorum(self.state.votes_received.len() as u32) {
                         info!(self.log, "Quorum reached");
+                        info!(self.log, "I am the leader {}", self.id);
                         self.state.state = RaftState::Leader;
                         break;
                     }
@@ -328,7 +334,6 @@ impl Server {
             return;
         }
         info!(self.log, "Server {} is the leader", self.id);
-        info!(self.log, "Leader state: {:?}", self.state);
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_millis(300));
 
@@ -377,7 +382,7 @@ impl Server {
                         self.debounce_timer = Instant::now();
                     }
 
-                    info!(self.log, "Leader state: {:?}", self.state);
+                    // debug!(self.log, "Leader id: {}, Leader state: {:?}", self.id, self.state);
                 },
             }
         }
@@ -462,7 +467,7 @@ impl Server {
                 self.handle_append_entries_response(&data).await;
             }
             MessageType::Heartbeat => {
-                self.handle_heartbeat().await;
+                self.handle_heartbeat(&data).await;
             }
             MessageType::HeartbeatResponse => {
                 self.handle_heartbeat_response().await;
@@ -716,10 +721,38 @@ impl Server {
         }
     }
 
-    async fn handle_heartbeat(&mut self) {
+    async fn handle_heartbeat(&mut self, data: &[u8]) {
         if self.state.state != RaftState::Follower || self.state.state != RaftState::Candidate {
             return;
         }
+        let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+        if term < self.state.current_term {
+            return;
+        }
+
+        // if a leader gets a heartbeat from a leader with a higher term, it should step down
+        if term > self.state.current_term {
+            self.state.state = RaftState::Follower;
+        }
+
+        // if a leader gets a heartbeat from a leader same term, it should step down if it has a higher id
+        if term == self.state.current_term {
+            let leader_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+            if self.config.default_leader.is_none() {
+                if self.id < leader_id {
+                    self.state.state = RaftState::Follower;
+                    self.state.current_term = term;
+                }
+            } else {
+                if self.id != self.config.default_leader.unwrap() {
+                    self.state.state = RaftState::Follower;
+                    self.state.current_term = term;
+                } else {
+                    self.state.state = RaftState::Leader;
+                }
+            }
+        }
+
         self.state.last_heartbeat = Instant::now();
     }
 

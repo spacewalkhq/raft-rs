@@ -28,7 +28,7 @@ async fn main() {
     let configs: Vec<_> = cluster_nodes
         .iter()
         .map(|&id| ServerConfig {
-            election_timeout: Duration::from_secs(5),
+            election_timeout: Duration::from_millis(200),
             address: "127.0.0.1".to_string(),
             port: 5000 + id as u16,
             cluster_nodes: cluster_nodes.clone(),
