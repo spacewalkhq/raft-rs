@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::error::StorageError::MaliciousFile;
+use crate::error::StorageError::CorruptFile;
 use crate::error::{Error, Result, StorageError};
 
 const MAX_FILE_SIZE: u64 = 1_000_000;
@@ -62,7 +62,7 @@ impl LocalStorage {
         }
 
         if buffer.len() < CHECKSUM_LEN {
-            return Err(Error::Store(StorageError::MaliciousFile));
+            return Err(Error::Store(StorageError::CorruptFile));
         }
 
         let data = &buffer[..buffer.len() - 64];
@@ -115,7 +115,7 @@ impl Storage for LocalStorage {
         let metadata = fs::metadata(&self.path).await.map_err(Error::Io)?;
 
         if metadata.len() > MAX_FILE_SIZE {
-            return Err(Error::Store(MaliciousFile));
+            return Err(Error::Store(CorruptFile));
         }
         Ok(())
     }

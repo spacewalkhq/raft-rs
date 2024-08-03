@@ -41,8 +41,8 @@ pub enum NetworkError {
 pub enum StorageError {
     #[error("File is empty")]
     EmptyFile,
-    #[error("File is potentially malicious")]
-    MaliciousFile,
+    #[error("File is corrupted")]
+    CorruptFile,
     #[error("Data integrity check failed!")]
     DataIntegrityError,
     #[error("Storing log failed")]
