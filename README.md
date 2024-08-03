@@ -5,11 +5,9 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 ## Note
 - This project is still under development and is not yet production-ready. It is not recommended to use this in production environments.
 
-- We are actively working on this project to make it better and more reliable. If you have any suggestions or feedback, please feel free to open an issue or a pull request.
+- We are actively working on this project to make it better and more reliable. If you have any suggestions or feedback, please feel free to open an issue or a pull request. This is true until we reach version 1.0.0.
 
-- Expect breaking changes in the API and the implementation.
-
-- Release version 0.1.0 is planned to be released by **August 16th, 2024**.
+- Release every 2 weeks.
 
 ## Goals
 - [x] Understandable
