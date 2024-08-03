@@ -96,7 +96,7 @@ impl Server {
     pub fn new(id: u32, config: ServerConfig) -> Server {
         let log = get_logger();
         let log = log.new(
-            o!("address" => config.address.clone(), "port" => config.port, "leader" => config.default_leader.unwrap_or(1), "id" => id),
+            o!("address" => config.address.clone(), "port" => config.port, "default leader" => config.default_leader.unwrap_or(1), "id" => id),
         );
 
         let peers: Vec<u32> = config
