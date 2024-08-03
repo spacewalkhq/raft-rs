@@ -9,11 +9,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("storage error {0}")]
+    #[error("Storage error {0}")]
     Store(#[from] StorageError),
-    #[error("network error {0}")]
+    #[error("Network error {0}")]
     Network(#[from] NetworkError),
-    #[error("file error {0}")]
+    #[error("File error {0}")]
     FileError(#[from] FileError),
     /// Some other error occurred.
     #[error("unknown error {0}")]
@@ -22,48 +22,48 @@ pub enum Error {
 
 #[derive(Error, Debug)]
 pub enum NetworkError {
-    #[error("accepting incoming connection failed")]
+    #[error("Accepting incoming connection failed")]
     AcceptError,
-    #[error("error connection is closed")]
+    #[error("Connection is closed")]
     ConnectionClosedError,
-    #[error("connection to {0} failed")]
+    #[error("Connection to {0} failed")]
     ConnectError(SocketAddr),
-    #[error("failed binding to {0}")]
+    #[error("Failed binding to {0}")]
     BindError(SocketAddr),
-    #[error("broadcast failed")]
+    #[error("Broadcast failed")]
     BroadcastError,
 }
 
 #[derive(Error, Debug)]
 pub enum StorageError {
-    #[error("file is empty")]
+    #[error("File is empty")]
     EmptyFile,
     #[error("File is potentially malicious")]
     MaliciousFile,
-    #[error("error data integrity check failed!")]
+    #[error("Data integrity check failed!")]
     DataIntegrityError,
-    #[error("storing log failed")]
+    #[error("Storing log failed")]
     StoreError,
-    #[error("log compaction failed")]
+    #[error("Log compaction failed")]
     CompactionError,
-    #[error("log retrieval failed")]
+    #[error("Log retrieval failed")]
     RetrieveError,
 }
 
 #[derive(Error, Debug)]
 pub enum FileError {
-    #[error("write all operation failed")]
+    #[error("Write operation failed")]
     WriteError,
-    #[error("flush operation failed")]
+    #[error("Flush operation failed")]
     FlushError,
-    #[error("creating file failed")]
+    #[error("Creating file failed")]
     CreateError,
-    #[error("opening file failed")]
+    #[error("Opening file failed")]
     OpenError,
-    #[error("reading file failed")]
+    #[error("Reading file failed")]
     ReadError,
-    #[error("removing file failed")]
+    #[error("Removing file failed")]
     RemoveFileError,
-    #[error("reading file metadata failed")]
+    #[error("Reading file metadata failed")]
     MetaDataError,
 }
