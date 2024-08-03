@@ -10,9 +10,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
+use crate::error::{Error, NetworkError};
 use crate::error::NetworkError::ConnectionClosedError;
 use crate::error::Result;
-use crate::error::{Error, FileError, NetworkError};
 use crate::parse_ip_address;
 
 #[async_trait]
@@ -45,11 +45,11 @@ impl TCPManager {
     async fn async_send(data: &[u8], address: SocketAddr) -> Result<()> {
         let mut stream = TcpStream::connect(address)
             .await
-            .map_err(|_e| NetworkError::ConnectError(address))?;
+            .map_err(Error::Io)?;
         stream
             .write_all(data)
             .await
-            .map_err(|_e| FileError::WriteError)?;
+            .map_err(Error::Io)?;
         Ok(())
     }
 
@@ -60,13 +60,13 @@ impl TCPManager {
             let (mut stream, _) = listener
                 .accept()
                 .await
-                .map_err(|_e| NetworkError::AcceptError)?;
+                .map_err(Error::Io)?;
             let mut buffer = Vec::new();
             let mut reader = tokio::io::BufReader::new(&mut stream);
             reader
                 .read_to_end(&mut buffer)
                 .await
-                .map_err(|_e| FileError::ReadError)?;
+                .map_err(Error::Io)?;
             data = buffer;
         }
         Ok(data)
@@ -102,7 +102,7 @@ impl NetworkLayer for TCPManager {
     async fn open(&self) -> Result<()> {
         let mut is_open = self.is_open.lock().await;
         if *is_open {
-            return Err(Error::Unknown("listener is already open".into()));
+            return Err(Error::Unknown("Listener is already open".into()));
         }
         let addr: SocketAddr = format!("{}:{}", self.address, self.port).parse().unwrap();
         let listener = TcpListener::bind(addr)

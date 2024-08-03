@@ -9,12 +9,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
 pub enum Error {
+    // Storage layer specific error
     #[error("Storage error {0}")]
     Store(#[from] StorageError),
+    // Network layer specific error
     #[error("Network error {0}")]
     Network(#[from] NetworkError),
+    // To handle all std lib io error
     #[error("File error {0}")]
-    FileError(#[from] FileError),
+    Io(#[from] std::io::Error),
     /// Some other error occurred.
     #[error("unknown error {0}")]
     Unknown(#[from] Box<dyn std::error::Error + Sync + Send>),
@@ -48,22 +51,6 @@ pub enum StorageError {
     CompactionError,
     #[error("Log retrieval failed")]
     RetrieveError,
-}
-
-#[derive(Error, Debug)]
-pub enum FileError {
-    #[error("Write operation failed")]
-    WriteError,
-    #[error("Flush operation failed")]
-    FlushError,
-    #[error("Creating file failed")]
-    CreateError,
-    #[error("Opening file failed")]
-    OpenError,
-    #[error("Reading file failed")]
-    ReadError,
-    #[error("Removing file failed")]
-    RemoveFileError,
     #[error("Reading file metadata failed")]
     MetaDataError,
 }
