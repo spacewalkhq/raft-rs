@@ -10,9 +10,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-use crate::error::{Error, NetworkError};
 use crate::error::NetworkError::ConnectionClosedError;
 use crate::error::Result;
+use crate::error::{Error, NetworkError};
 use crate::parse_ip_address;
 
 #[async_trait]
@@ -43,13 +43,8 @@ impl TCPManager {
     }
 
     async fn async_send(data: &[u8], address: SocketAddr) -> Result<()> {
-        let mut stream = TcpStream::connect(address)
-            .await
-            .map_err(Error::Io)?;
-        stream
-            .write_all(data)
-            .await
-            .map_err(Error::Io)?;
+        let mut stream = TcpStream::connect(address).await.map_err(Error::Io)?;
+        stream.write_all(data).await.map_err(Error::Io)?;
         Ok(())
     }
 
@@ -57,16 +52,10 @@ impl TCPManager {
         let mut data = Vec::new();
         let listener = self.listener.lock().await;
         if let Some(listener) = &*listener {
-            let (mut stream, _) = listener
-                .accept()
-                .await
-                .map_err(Error::Io)?;
+            let (mut stream, _) = listener.accept().await.map_err(Error::Io)?;
             let mut buffer = Vec::new();
             let mut reader = tokio::io::BufReader::new(&mut stream);
-            reader
-                .read_to_end(&mut buffer)
-                .await
-                .map_err(Error::Io)?;
+            reader.read_to_end(&mut buffer).await.map_err(Error::Io)?;
             data = buffer;
         }
         Ok(data)
