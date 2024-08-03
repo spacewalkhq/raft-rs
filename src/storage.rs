@@ -1,7 +1,6 @@
 // Organization: SpacewalkHq
 // License: MIT License
 
-use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -10,16 +9,19 @@ use sha2::{Digest, Sha256};
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::error::StorageError::CorruptFile;
+use crate::error::{Error, Result, StorageError};
+
 const MAX_FILE_SIZE: u64 = 1_000_000;
 const CHECKSUM_LEN: usize = 64;
 
 #[async_trait]
 pub trait Storage {
-    async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>>;
-    async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
-    async fn compaction(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
-    async fn delete(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
-    async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn store(&self, data: &[u8]) -> Result<()>;
+    async fn retrieve(&self) -> Result<Vec<u8>>;
+    async fn compaction(&self) -> Result<()>;
+    async fn delete(&self) -> Result<()>;
+    async fn turned_malicious(&self) -> Result<()>;
 }
 
 #[derive(Clone)]
@@ -38,27 +40,29 @@ impl LocalStorage {
         }
     }
 
-    async fn store_async(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn store_async(&self, data: &[u8]) -> Result<()> {
         let checksum = calculate_checksum(data);
         let data_with_checksum = [data, checksum.as_slice()].concat();
 
-        let mut file = File::create(&self.path).await?;
-        file.write_all(&data_with_checksum).await?;
-        file.flush().await?;
+        let mut file = File::create(&self.path).await.map_err(Error::Io)?;
+        file.write_all(&data_with_checksum)
+            .await
+            .map_err(Error::Io)?;
+        file.flush().await.map_err(Error::Io)?;
         Ok(())
     }
 
-    async fn retrieve_async(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        let mut file = File::open(&self.path).await?;
+    async fn retrieve_async(&self) -> Result<Vec<u8>> {
+        let mut file = File::open(&self.path).await.map_err(Error::Io)?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).await?;
+        file.read_to_end(&mut buffer).await.map_err(Error::Io)?;
 
         if buffer.is_empty() {
-            return Err("File is empty".into());
+            return Err(Error::Store(StorageError::EmptyFile));
         }
 
         if buffer.len() < CHECKSUM_LEN {
-            return Err("File is potentially malicious".into());
+            return Err(Error::Store(StorageError::CorruptFile));
         }
 
         let data = &buffer[..buffer.len() - 64];
@@ -66,21 +70,20 @@ impl LocalStorage {
         let calculated_checksum = calculate_checksum(data);
 
         if stored_checksum != calculated_checksum {
-            return Err("Data integrity check failed!".into());
+            return Err(Error::Store(StorageError::DataIntegrityError));
         }
 
         Ok(data.to_vec())
     }
 
-    async fn delete_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        fs::remove_file(&self.path).await?;
+    async fn delete_async(&self) -> Result<()> {
+        fs::remove_file(&self.path).await.map_err(Error::Io)?;
         Ok(())
     }
 
-    async fn compaction_async(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn compaction_async(&self) -> Result<()> {
         // If file size is greater than 1MB, then compact it
-        let metadata = fs::metadata(&self.path).await?;
-        println!("file size {}", metadata.len());
+        let metadata = fs::metadata(&self.path).await.map_err(Error::Io)?;
         if metadata.len() > MAX_FILE_SIZE {
             self.delete_async().await?;
         }
@@ -90,29 +93,29 @@ impl LocalStorage {
 
 #[async_trait]
 impl Storage for LocalStorage {
-    async fn store(&self, data: &[u8]) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn store(&self, data: &[u8]) -> Result<()> {
         self.store_async(data).await
     }
 
-    async fn retrieve(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+    async fn retrieve(&self) -> Result<Vec<u8>> {
         self.retrieve_async().await
     }
 
-    async fn compaction(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn compaction(&self) -> Result<()> {
         self.compaction_async().await
     }
 
-    async fn delete(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn delete(&self) -> Result<()> {
         self.delete_async().await
     }
 
-    async fn turned_malicious(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn turned_malicious(&self) -> Result<()> {
         // Check if the file is tampered with
         self.retrieve().await?;
-        let metadata = fs::metadata(&self.path).await?;
+        let metadata = fs::metadata(&self.path).await.map_err(Error::Io)?;
 
         if metadata.len() > MAX_FILE_SIZE {
-            return Err("File is potentially malicious".into());
+            return Err(Error::Store(CorruptFile));
         }
         Ok(())
     }

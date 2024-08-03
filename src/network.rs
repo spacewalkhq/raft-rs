@@ -1,32 +1,27 @@
 // organization : SpacewalkHq
 // License : MIT License
 
-use crate::parse_ip_address;
-use async_trait::async_trait;
-use futures::future::join_all;
-use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::future::join_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
+use crate::error::NetworkError::ConnectionClosedError;
+use crate::error::Result;
+use crate::error::{Error, NetworkError};
+use crate::parse_ip_address;
+
 #[async_trait]
 pub trait NetworkLayer: Send + Sync {
-    async fn send(
-        &self,
-        address: &str,
-        port: &str,
-        data: &[u8],
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
-    async fn receive(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>;
-    async fn broadcast(
-        &self,
-        data: &[u8],
-        addresses: Vec<String>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>;
-    async fn open(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
-    async fn close(self) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<()>;
+    async fn receive(&self) -> Result<Vec<u8>>;
+    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<()>;
+    async fn open(&self) -> Result<()>;
+    async fn close(self) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -47,23 +42,20 @@ impl TCPManager {
         }
     }
 
-    async fn async_send(
-        data: &[u8],
-        address: SocketAddr,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let mut stream = TcpStream::connect(address).await?;
-        stream.write_all(data).await?;
+    async fn async_send(data: &[u8], address: SocketAddr) -> Result<()> {
+        let mut stream = TcpStream::connect(address).await.map_err(Error::Io)?;
+        stream.write_all(data).await.map_err(Error::Io)?;
         Ok(())
     }
 
-    async fn handle_receive(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+    async fn handle_receive(&self) -> Result<Vec<u8>> {
         let mut data = Vec::new();
         let listener = self.listener.lock().await;
         if let Some(listener) = &*listener {
-            let (mut stream, _) = listener.accept().await?;
+            let (mut stream, _) = listener.accept().await.map_err(Error::Io)?;
             let mut buffer = Vec::new();
             let mut reader = tokio::io::BufReader::new(&mut stream);
-            reader.read_to_end(&mut buffer).await?;
+            reader.read_to_end(&mut buffer).await.map_err(Error::Io)?;
             data = buffer;
         }
         Ok(data)
@@ -72,26 +64,17 @@ impl TCPManager {
 
 #[async_trait]
 impl NetworkLayer for TCPManager {
-    async fn send(
-        &self,
-        address: &str,
-        port: &str,
-        data: &[u8],
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let addr: SocketAddr = format!("{}:{}", address, port).parse()?;
+    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<()> {
+        let addr: SocketAddr = format!("{}:{}", address, port).parse().unwrap();
         Self::async_send(data, addr).await?;
         Ok(())
     }
 
-    async fn receive(&self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+    async fn receive(&self) -> Result<Vec<u8>> {
         self.handle_receive().await
     }
 
-    async fn broadcast(
-        &self,
-        data: &[u8],
-        addresses: Vec<String>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<()> {
         let futures = addresses.into_iter().map(|address| {
             let (ip, port) = parse_ip_address(&address);
             let addr: SocketAddr = format!("{}:{}", ip, port).parse().unwrap();
@@ -100,26 +83,29 @@ impl NetworkLayer for TCPManager {
         join_all(futures)
             .await
             .into_iter()
-            .collect::<Result<_, _>>()?;
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_e| NetworkError::BroadcastError)?;
         Ok(())
     }
 
-    async fn open(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn open(&self) -> Result<()> {
         let mut is_open = self.is_open.lock().await;
         if *is_open {
-            return Err("Listener is already open".into());
+            return Err(Error::Unknown("Listener is already open".into()));
         }
-        let addr: SocketAddr = format!("{}:{}", self.address, self.port).parse()?;
-        let listener = TcpListener::bind(addr).await?;
+        let addr: SocketAddr = format!("{}:{}", self.address, self.port).parse().unwrap();
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|_e| NetworkError::BindError(addr))?;
         *self.listener.lock().await = Some(listener);
         *is_open = true;
         Ok(())
     }
 
-    async fn close(self) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn close(self) -> Result<()> {
         let mut is_open = self.is_open.lock().await;
         if !*is_open {
-            return Err("Listener is not open".into());
+            return Err(Error::Network(ConnectionClosedError));
         }
         *self.listener.lock().await = None;
         *is_open = false;
@@ -129,8 +115,9 @@ impl NetworkLayer for TCPManager {
 
 #[cfg(test)]
 mod tests {
-    use crate::network::{NetworkLayer, TCPManager};
     use tokio::task::JoinSet;
+
+    use crate::network::{NetworkLayer, TCPManager};
 
     const LOCALHOST: &str = "127.0.0.1";
 
