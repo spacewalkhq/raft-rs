@@ -1,6 +1,6 @@
 # Raft-rs
 An understandable, fast, scalable and optimized Raft implementation.
-It is asynchronous(built on tokio runtime) and supports zero-copy. It does not assume logs to be non-malicious, if corrupted, it will repair the logs via peer-to-peer communication. 
+It is asynchronous(built on tokio runtime) and supports zero-copy. It does not assume storage to be non-malicious, if corrupted, it will repair the logs via peer-to-peer communication. 
 
 ## Note
 - This project is still under development and is not yet production-ready. It is not recommended to use this in production environments.
