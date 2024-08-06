@@ -1,6 +1,7 @@
 // Organization: SpacewalkHq
 // License: MIT License
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -38,6 +39,18 @@ impl LocalStorage {
         LocalStorage {
             path: PathBuf::from(path),
         }
+    }
+
+    pub async fn check_storage(&self) -> io::Result<()> {
+        if let Some(parent_path) = self.path.parent() {
+            fs::create_dir_all(parent_path).await?;
+        }
+
+        if !self.path.exists() {
+            fs::File::create(&self.path).await?;
+        }
+
+        Ok(())
     }
 
     async fn store_async(&self, data: &[u8]) -> Result<()> {

@@ -152,6 +152,12 @@ impl Server {
             return;
         }
 
+        // if the storage path is not exist, create it
+        if let Err(e) = self.storage.check_storage().await {
+            error!(self.log, "Failed to check storage: {}", e);
+            return;
+        }
+
         loop {
             match self.state.state {
                 RaftState::Follower => self.follower().await,
