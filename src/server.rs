@@ -439,12 +439,7 @@ impl Server {
     }
 
     async fn handle_rpc(&mut self, data: Vec<u8>) {
-        let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let message_type: u32 = u32::from_be_bytes(data[8..12].try_into().unwrap());
-
-        if term < self.state.current_term && message_type != 3 {
-            return;
-        }
 
         let message_type = match message_type {
             0 => MessageType::RequestVote,
@@ -501,7 +496,11 @@ impl Server {
                 self.handle_repair_response(&data).await;
             }
             MessageType::JoinRequest => {
-                info!(self.log, "Received join request: {:?}", data);
+                info!(
+                    self.log,
+                    "Received join request: {:?}",
+                    String::from_utf8_lossy(&data)
+                );
                 self.handle_join_request(&data).await;
             }
             MessageType::JoinResponse => {
@@ -841,7 +840,18 @@ impl Server {
 
         let node_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
-        let node_ip_address = String::from_utf8(data[8..].to_vec()).unwrap();
+        let node_ip_address = String::from_utf8(data[12..].to_vec()).unwrap();
+
+        info!(
+            self.log,
+            "Current cluster nodes: {:?}, want join node: {}",
+            self.config
+                .id_to_address_mapping
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
+            node_ip_address
+        );
 
         if self.config.cluster_nodes.contains(&node_id) {
             error!(
@@ -856,10 +866,11 @@ impl Server {
             return;
         }
 
+        self.peers.push(node_id);
         self.config.cluster_nodes.push(node_id);
         self.config
             .id_to_address_mapping
-            .insert(node_id, node_ip_address);
+            .insert(node_id, node_ip_address.clone());
 
         let mut response = [
             self.id.to_be_bytes(),
@@ -889,9 +900,9 @@ impl Server {
 
         let leader_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let current_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
-        let commit_index = u32::from_be_bytes(data[8..12].try_into().unwrap());
-        let previous_log_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
-        let peers_count = u32::from_be_bytes(data[16..].try_into().unwrap());
+        let commit_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
+        let previous_log_index = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        let peers_count = u32::from_be_bytes(data[20..24].try_into().unwrap());
 
         self.state.current_term = current_term;
         self.state.commit_index = commit_index;
