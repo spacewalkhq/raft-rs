@@ -13,30 +13,27 @@ use tokio::sync::Mutex;
 use crate::error::NetworkError::ConnectionClosedError;
 use crate::error::Result;
 use crate::error::{Error, NetworkError};
-use crate::parse_ip_address;
 
 #[async_trait]
 pub trait NetworkLayer: Send + Sync {
-    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<()>;
+    async fn send(&self, address: SocketAddr, data: &[u8]) -> Result<()>;
     async fn receive(&self) -> Result<Vec<u8>>;
-    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<()>;
+    async fn broadcast(&self, data: &[u8], addresses: Vec<SocketAddr>) -> Result<()>;
     async fn open(&self) -> Result<()>;
     async fn close(self) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
 pub struct TCPManager {
-    address: String,
-    port: u16,
+    address: SocketAddr,
     listener: Arc<Mutex<Option<TcpListener>>>,
     is_open: Arc<Mutex<bool>>,
 }
 
 impl TCPManager {
-    pub fn new(address: String, port: u16) -> Self {
+    pub fn new(address: SocketAddr) -> Self {
         TCPManager {
             address,
-            port,
             listener: Arc::new(Mutex::new(None)),
             is_open: Arc::new(Mutex::new(false)),
         }
@@ -64,9 +61,8 @@ impl TCPManager {
 
 #[async_trait]
 impl NetworkLayer for TCPManager {
-    async fn send(&self, address: &str, port: &str, data: &[u8]) -> Result<()> {
-        let addr: SocketAddr = format!("{}:{}", address, port).parse().unwrap();
-        Self::async_send(data, addr).await?;
+    async fn send(&self, address: SocketAddr, data: &[u8]) -> Result<()> {
+        Self::async_send(data, address).await?;
         Ok(())
     }
 
@@ -74,12 +70,10 @@ impl NetworkLayer for TCPManager {
         self.handle_receive().await
     }
 
-    async fn broadcast(&self, data: &[u8], addresses: Vec<String>) -> Result<()> {
-        let futures = addresses.into_iter().map(|address| {
-            let (ip, port) = parse_ip_address(&address);
-            let addr: SocketAddr = format!("{}:{}", ip, port).parse().unwrap();
-            Self::async_send(data, addr)
-        });
+    async fn broadcast(&self, data: &[u8], addresses: Vec<SocketAddr>) -> Result<()> {
+        let futures = addresses
+            .into_iter()
+            .map(|address| Self::async_send(data, address));
         join_all(futures)
             .await
             .into_iter()
@@ -93,7 +87,7 @@ impl NetworkLayer for TCPManager {
         if *is_open {
             return Err(Error::Unknown("Listener is already open".into()));
         }
-        let addr: SocketAddr = format!("{}:{}", self.address, self.port).parse().unwrap();
+        let addr: SocketAddr = self.address;
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|_e| NetworkError::BindError(addr))?;
@@ -115,15 +109,21 @@ impl NetworkLayer for TCPManager {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
     use tokio::task::JoinSet;
 
     use crate::network::{NetworkLayer, TCPManager};
 
     const LOCALHOST: &str = "127.0.0.1";
 
+    fn sock_addr(host: &str, port: u32) -> SocketAddr {
+        let addr = format!("{}:{}", host, port);
+        addr.parse::<SocketAddr>().unwrap()
+    }
+
     #[tokio::test]
     async fn test_send() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8082);
+        let network = TCPManager::new(sock_addr(LOCALHOST, 8082));
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
@@ -131,7 +131,7 @@ mod tests {
             let _ = network_clone.receive().await.unwrap();
         });
 
-        let send_result = network.send(LOCALHOST, "8082", &data).await;
+        let send_result = network.send(sock_addr(LOCALHOST, 8082), &data).await;
         assert!(send_result.is_ok());
 
         handler.await.unwrap();
@@ -139,7 +139,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_closed_connection() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8020);
+        let network = TCPManager::new(sock_addr(LOCALHOST, 8020));
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
@@ -147,26 +147,29 @@ mod tests {
             let _ = network_clone.receive().await.unwrap();
         });
 
-        let send_result = network.send(LOCALHOST, "8021", &data).await;
+        let send_result = network.send(sock_addr(LOCALHOST, 8021), &data).await;
         assert!(send_result.is_err());
     }
 
     #[tokio::test]
     async fn test_receive_happy_case() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8030);
+        let network = TCPManager::new(sock_addr(LOCALHOST, 8030));
         let data = vec![1, 2, 3];
         network.open().await.unwrap();
         let network_clone = network.clone();
         let handler = tokio::spawn(async move { network_clone.receive().await.unwrap() });
 
-        network.send(LOCALHOST, "8030", &data).await.unwrap();
+        network
+            .send(sock_addr(LOCALHOST, 8030), &data)
+            .await
+            .unwrap();
         let rx_data = handler.await.unwrap();
         assert_eq!(rx_data, data)
     }
 
     #[tokio::test]
     async fn test_open() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8040);
+        let network = TCPManager::new(sock_addr(LOCALHOST, 8040));
         let status = network.open().await;
         assert!(status.is_ok());
         assert!(*network.is_open.lock().await);
@@ -174,7 +177,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reopen_opened_port() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8042);
+        let network = TCPManager::new(sock_addr(LOCALHOST, 8042));
         let status = network.open().await;
         assert!(status.is_ok());
         let another_network = network.clone();
@@ -184,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_close() {
-        let network = TCPManager::new(LOCALHOST.to_string(), 8046);
+        let network = TCPManager::new(sock_addr(LOCALHOST, 8046));
         let _ = network.open().await;
 
         let close_status = network.close().await;
@@ -195,7 +198,7 @@ mod tests {
     async fn test_broadcast_happy_case() {
         let data = vec![1, 2, 3, 4];
         // server which is about to broadcast data
-        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8050);
+        let broadcasting_node = TCPManager::new(sock_addr(LOCALHOST, 8050));
         broadcasting_node.open().await.unwrap();
         assert!(*broadcasting_node.is_open.lock().await);
 
@@ -206,8 +209,12 @@ mod tests {
 
         for p in 8051..8060 {
             // create receiver server
-            let rx = TCPManager::new(LOCALHOST.to_string(), p);
-            receiver_addresses.push(format!("{}:{}", LOCALHOST, p));
+            let rx = TCPManager::new(sock_addr(LOCALHOST, p));
+            receiver_addresses.push(
+                format!("{}:{}", LOCALHOST, p)
+                    .parse::<SocketAddr>()
+                    .unwrap(),
+            );
 
             rx.open().await.unwrap();
             assert!(*rx.is_open.lock().await);
@@ -239,7 +246,7 @@ mod tests {
     async fn test_broadcast_some_nodes_down() {
         let data = vec![1, 2, 3, 4];
         // server which is about to broadcast data
-        let broadcasting_node = TCPManager::new(LOCALHOST.to_string(), 8061);
+        let broadcasting_node = TCPManager::new(sock_addr(LOCALHOST, 8061));
         broadcasting_node.open().await.unwrap();
         assert!(*broadcasting_node.is_open.lock().await);
 
@@ -249,8 +256,12 @@ mod tests {
         let mut receiver_addresses = vec![];
         for p in 8062..8070 {
             // Create a receiver node
-            let rx = TCPManager::new(LOCALHOST.to_string(), p);
-            receiver_addresses.push(format!("{}:{}", LOCALHOST, p));
+            let rx = TCPManager::new(sock_addr(LOCALHOST, p));
+            receiver_addresses.push(
+                format!("{}:{}", LOCALHOST, p)
+                    .parse::<SocketAddr>()
+                    .unwrap(),
+            );
             // open connection for half server
             // mocking rest half to be down
             if p & 1 == 1 {
