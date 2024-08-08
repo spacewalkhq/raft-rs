@@ -20,11 +20,11 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 - [x] Log compaction
 - [x] Tigerbeetle style replica repair
 - [x] Dynamic cluster membership changes support
+- [x] Test for dynamic cluster membership changes
 
 ## To-Do
 - [ ] Production-ready
 - [ ] Test replica repair thoroughly
-- [ ] Test for dynamic cluster membership changes
 - [ ] io_uring support
 - [ ] Complete batch write implementation
 - [ ] Improve Log compaction
