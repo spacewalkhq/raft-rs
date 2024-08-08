@@ -31,3 +31,11 @@ tempfile = "3.10.1"
 [[example]]
 name = "simple_run"
 path = "examples/simple_run.rs"
+
+[[example]]
+name = "simulate_node_failure"
+path = "examples/simulate_node_failure.rs"
+
+[[example]]
+name = "simulate_add_node"
+path = "examples/simulate_add_node.rs"
