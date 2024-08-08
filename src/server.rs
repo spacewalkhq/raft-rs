@@ -7,7 +7,8 @@ use crate::storage::{LocalStorage, Storage};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
 use std::collections::{HashMap, VecDeque};
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
+use std::os::unix::fs::lchown;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
@@ -32,21 +33,23 @@ impl From<(u32, SocketAddr)> for NodeMeta {
 #[derive(Debug)]
 struct ClusterConfig {
     id: u32,
-    participants: Vec<NodeMeta>,
+    peers: Vec<NodeMeta>,
 }
 
 impl ClusterConfig {
     fn new(participants: Vec<NodeMeta>) -> ClusterConfig {
         ClusterConfig {
             id: 0,
-            participants,
+            peers: participants,
         }
     }
 
+    // Return meta of peers for a node
     fn peers(&self, id: u32) -> Vec<NodeMeta> {
         unimplemented!()
     }
 
+    // Return address of peers for a node
     fn peer_address(&self, id: u32) -> Vec<SocketAddr> {
         unimplemented!()
     }
@@ -64,6 +67,10 @@ impl ClusterConfig {
 
     fn add_server(&self, n: NodeMeta) {
         unimplemented!()
+    }
+
+    fn peer_count(&self, id: u32) -> u32 {
+        unimplemented!();
     }
 }
 
@@ -136,7 +143,6 @@ pub struct Server {
     pub id: u32,
     state: ServerState,
     config: ServerConfig,
-    peers: Vec<NodeMeta>,
     network_manager: TCPManager,
     cluster_config: ClusterConfig,
     // Add write buffer and debounce timer
@@ -150,11 +156,12 @@ impl Server {
     pub fn new(id: u32, config: ServerConfig, cluster_config: ClusterConfig) -> Server {
         let log = get_logger();
         let log = log.new(
-            // o!("address" => config.address.clone() "default leader" => config.default_leader.unwrap_or(1), "id" => id),
-            o!("default leader" => config.default_leader.unwrap_or(1), "id" => id),
+            o!("ip" => config.address.ip().to_string(), "port" => config.address.port(), "default leader" => config.default_leader.unwrap_or(1), "id" => id),
         );
 
-        let peers: Vec<NodeMeta> = cluster_config.peers(id);
+        // Get meta of all peers server of this server
+        // let peers: Vec<NodeMeta> = cluster_config.peers(id);
+        let peer_count = cluster_config.peer_count(id);
         let state = ServerState {
             current_term: 0,
             state: RaftState::Follower,
@@ -162,8 +169,8 @@ impl Server {
             log: VecDeque::new(),
             commit_index: 0,
             previous_log_index: 0,
-            next_index: vec![0; peers.len()],
-            match_index: vec![0; peers.len()],
+            next_index: vec![0; peer_count as usize],
+            match_index: vec![0; peer_count as usize],
             election_timeout: config.election_timeout + Duration::from_millis(20 * id as u64),
             last_heartbeat: Instant::now(),
             votes_received: HashMap::new(),
@@ -180,7 +187,6 @@ impl Server {
         Server {
             id,
             state,
-            peers,
             config,
             network_manager,
             cluster_config,
@@ -197,8 +203,8 @@ impl Server {
             return;
         }
 
-        // there should be atleast 3 peers to form a quorum
-        if self.peers.len() < 2 {
+        // there should be at-least 3 peers to form a quorum
+        if self.peers().len() < 2 {
             error!(self.log, "At least 3 peers are required to form a quorum");
             return;
         }
@@ -257,7 +263,7 @@ impl Server {
 
                 // step2 get the log from other peers
                 // ping all the peers to get the log
-                let addresses = self.cluster_config.peer_address(self.id);
+                let addresses = self.peers_address();
                 let data = [
                     self.id.to_be_bytes(),
                     0u32.to_be_bytes(),
@@ -270,8 +276,8 @@ impl Server {
             info!(self.log, "No log entries found on disk");
         }
 
-        self.state.match_index = vec![0; self.peers.len() + 1];
-        self.state.next_index = vec![0; self.peers.len() + 1];
+        self.state.match_index = vec![0; self.peer_count() + 1];
+        self.state.next_index = vec![0; self.peer_count() + 1];
 
         info!(self.log, "Server {} is a follower", self.id);
         // default leader
@@ -320,7 +326,7 @@ impl Server {
 
         // TODO: Send RequestVote RPCs with leadership preferences
         let data = self.prepare_request_vote(self.id, self.state.current_term);
-        let addresses = self.cluster_config.peer_address(self.id);
+        let addresses = self.peers_address();
         info!(
             self.log,
             "Starting election, id: {}, term: {}", self.id, self.state.current_term
@@ -383,7 +389,7 @@ impl Server {
                     self.state.last_heartbeat = now;
 
                     let heartbeat_data = self.prepare_heartbeat();
-                    let addresses = self.cluster_config.peer_address(self.id);
+                    let addresses = self.peers_address();
 
                     if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
                         error!(self.log, "Failed to send heartbeats: {}", e);
@@ -403,7 +409,7 @@ impl Server {
                             self.persist_to_disk(self.id, &data).await;
                         }
 
-                        let addresses = self.cluster_config.peer_address(self.id);
+                        let addresses = self.peers_address();
                         if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
                             error!(self.log, "Failed to send append batch: {}", e);
                         }
@@ -711,7 +717,7 @@ impl Server {
 
             let mut match_indices = self.state.match_index.clone();
             match_indices.sort();
-            let quorum_index = match_indices[self.peers.len() / 2];
+            let quorum_index = match_indices[self.peer_count() / 2];
             if quorum_index >= self.state.commit_index {
                 self.state.commit_index = quorum_index;
                 // return client response
@@ -872,7 +878,7 @@ impl Server {
         .concat();
         response.extend_from_slice(&self.state.commit_index.to_be_bytes());
         response.extend_from_slice(&self.state.previous_log_index.to_be_bytes());
-        response.extend_from_slice(&self.peers.len().to_be_bytes());
+        response.extend_from_slice(&self.peer_count().to_be_bytes());
 
         let peer_address = self.cluster_config.address(node_id).unwrap();
         if let Err(e) = self.network_manager.send(peer_address, &response).await {
@@ -895,11 +901,6 @@ impl Server {
         self.state.commit_index = commit_index;
         self.state.previous_log_index = previous_log_index;
 
-        self.peers.clear();
-        // FIXME
-        // for i in 0..peers_count {
-        //     self.peers.push(i);
-        // }
 
         let request_data = [
             self.id.to_be_bytes(),
@@ -954,7 +955,7 @@ impl Server {
     }
 
     fn is_quorum(&self, votes: u32) -> bool {
-        votes > (self.peers.len() / 2).try_into().unwrap_or_default()
+        votes > (self.peer_count() / 2).try_into().unwrap_or_default()
     }
 
     #[allow(dead_code)]
@@ -962,5 +963,19 @@ impl Server {
         if let Err(e) = self.network_manager.close().await {
             error!(self.log, "Failed to close network manager: {}", e);
         }
+    }
+
+
+    // Helper function to add cluster config
+    fn peers(&self) -> Vec<NodeMeta> {
+        self.cluster_config.peers(self.id)
+    }
+
+    fn peers_address(&self) -> Vec<SocketAddr> {
+        self.cluster_config.peer_address(self.id)
+    }
+
+    fn peer_count(&self) -> usize {
+        self.peers().len()
     }
 }
