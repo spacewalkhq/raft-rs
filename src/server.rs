@@ -269,17 +269,7 @@ impl Server {
 
                 // step2 get the log from other peers
                 // ping all the peers to get the log
-                let addresses: Vec<String> = self
-                    .peers
-                    .iter()
-                    .map(|peer_id| {
-                        self.config
-                            .id_to_address_mapping
-                            .get(peer_id)
-                            .unwrap()
-                            .clone()
-                    })
-                    .collect();
+                let addresses: Vec<SocketAddr> = self.peers_address();
                 let data = [
                     self.id.to_be_bytes(),
                     0u32.to_be_bytes(),
@@ -292,8 +282,8 @@ impl Server {
             info!(self.log, "No log entries found on disk");
         }
 
-        self.state.match_index = vec![0; self.peers.len() + 1];
-        self.state.next_index = vec![0; self.peers.len() + 1];
+        self.state.match_index = vec![0; self.peer_count() + 1];
+        self.state.next_index = vec![0; self.peer_count() + 1];
 
         info!(self.log, "Server {} is a follower", self.id);
         // default leader
@@ -342,17 +332,7 @@ impl Server {
 
         // TODO: Send RequestVote RPCs with leadership preferences
         let data = self.prepare_request_vote(self.id, self.state.current_term);
-        let addresses: Vec<String> = self
-            .peers
-            .iter()
-            .map(|peer_id| {
-                self.config
-                    .id_to_address_mapping
-                    .get(peer_id)
-                    .unwrap()
-                    .clone()
-            })
-            .collect();
+        let addresses: Vec<SocketAddr> = self.peers_address();
         info!(
             self.log,
             "Starting election, id: {}, term: {}", self.id, self.state.current_term
@@ -415,9 +395,7 @@ impl Server {
                     self.state.last_heartbeat = now;
 
                     let heartbeat_data = self.prepare_heartbeat();
-                    let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
-                        self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
-                    }).collect();
+                    let addresses: Vec<SocketAddr> = self.peers_address();
 
                     if let Err(e) = self.network_manager.broadcast(&heartbeat_data, addresses).await {
                         error!(self.log, "Failed to send heartbeats: {}", e);
@@ -437,9 +415,7 @@ impl Server {
                             self.persist_to_disk(self.id, &data).await;
                         }
 
-                        let addresses: Vec<String> = self.peers.iter().map(|peer_id| {
-                            self.config.id_to_address_mapping.get(peer_id).unwrap().clone()
-                        }).collect();
+                        let addresses: Vec<SocketAddr> = self.peers_address();
                         if let Err(e) = self.network_manager.broadcast(&append_batch, addresses).await {
                             error!(self.log, "Failed to send append batch: {}", e);
                         }
@@ -607,14 +583,12 @@ impl Server {
         self.state.current_term = candidate_term;
 
         // get candidate address from config
-        let candidate_address = self.config.id_to_address_mapping.get(&candidate_id);
+        let candidate_address = self.cluster_config.address(candidate_id);
         if candidate_address.is_none() {
             // no dynamic membership changes
             info!(self.log, "Candidate address not found");
             return;
         }
-
-        let (candidate_ip, candidate_port) = parse_ip_address(candidate_address.unwrap());
 
         let data = [
             self.id.to_be_bytes(),
@@ -626,7 +600,7 @@ impl Server {
 
         let voteresponse = self
             .network_manager
-            .send(candidate_ip, candidate_port, &data)
+            .send(candidate_address.unwrap(), &data)
             .await;
         if let Err(e) = voteresponse {
             error!(self.log, "Failed to send vote response: {}", e);
@@ -710,17 +684,12 @@ impl Server {
             1u32.to_be_bytes(),
         ]
         .concat();
-        let leader_address = self.config.id_to_address_mapping.get(&id).unwrap();
-        let (leader_ip, leader_port) = parse_ip_address(leader_address);
+        let leader_address = self.config.address;
         info!(
             self.log,
             "Sending append entries response to leader: {}", id
         );
-        if let Err(e) = self
-            .network_manager
-            .send(leader_ip, leader_port, &response)
-            .await
-        {
+        if let Err(e) = self.network_manager.send(leader_address, &response).await {
             info!(self.log, "Failed to send append entries response: {}", e);
         }
     }
@@ -754,7 +723,7 @@ impl Server {
 
             let mut match_indices = self.state.match_index.clone();
             match_indices.sort();
-            let quorum_index = match_indices[self.peers.len() / 2];
+            let quorum_index = match_indices[self.peer_count() / 2];
             if quorum_index >= self.state.commit_index {
                 self.state.commit_index = quorum_index;
                 // return client response
@@ -767,11 +736,7 @@ impl Server {
                 .concat();
                 if let Err(e) = self
                     .network_manager
-                    .send(
-                        self.config.address.as_str(),
-                        self.config.port.to_string().as_str(),
-                        &response_data,
-                    )
+                    .send(self.config.address, &response_data)
                     .await
                 {
                     error!(self.log, "Failed to send client response: {}", e);
@@ -858,13 +823,8 @@ impl Server {
             response = [response.clone(), entry.to_be_bytes().to_vec()].concat();
         }
 
-        let peer_address = self.config.id_to_address_mapping.get(&peer_id).unwrap();
-        let (peer_ip, peer_port) = parse_ip_address(peer_address);
-        if let Err(e) = self
-            .network_manager
-            .send(peer_ip, peer_port, &response)
-            .await
-        {
+        let peer_address = self.cluster_config.address(peer_id).unwrap();
+        if let Err(e) = self.network_manager.send(peer_address, &response).await {
             error!(self.log, "Failed to send repair response: {}", e);
         }
     }
@@ -899,16 +859,11 @@ impl Server {
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let node_ip_address = String::from_utf8(data[12..].to_vec()).unwrap();
 
-        info!(
-            self.log,
-            "Current cluster nodes: {:?}, want join node: {}",
-            self.config
-                .id_to_address_mapping
-                .values()
-                .cloned()
-                .collect::<Vec<_>>(),
-            node_ip_address
-        );
+        // info!(
+        //     self.log,
+        //     "Current cluster nodes: {:?}, want join node: {}",
+        //     node_ip_address
+        // );
 
         if self.cluster_config.has_peer(node_id) {
             error!(
@@ -956,7 +911,6 @@ impl Server {
         self.state.current_term = current_term;
         self.state.commit_index = commit_index;
         self.state.previous_log_index = previous_log_index;
-
 
         let request_data = [
             self.id.to_be_bytes(),
@@ -1020,7 +974,6 @@ impl Server {
             error!(self.log, "Failed to close network manager: {}", e);
         }
     }
-
 
     // Helper function to add cluster config
     fn peers(&self) -> Vec<NodeMeta> {
