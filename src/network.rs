@@ -16,9 +16,9 @@ use crate::error::{Error, NetworkError};
 
 #[async_trait]
 pub trait NetworkLayer: Send + Sync {
-    async fn send(&self, address: SocketAddr, data: &[u8]) -> Result<()>;
+    async fn send(&self, address: &SocketAddr, data: &[u8]) -> Result<()>;
     async fn receive(&self) -> Result<Vec<u8>>;
-    async fn broadcast(&self, data: &[u8], addresses: Vec<SocketAddr>) -> Result<()>;
+    async fn broadcast(&self, data: &[u8], addresses: &[SocketAddr]) -> Result<()>;
     async fn open(&self) -> Result<()>;
     async fn close(self) -> Result<()>;
 }
@@ -39,7 +39,7 @@ impl TCPManager {
         }
     }
 
-    async fn async_send(data: &[u8], address: SocketAddr) -> Result<()> {
+    async fn async_send(data: &[u8], address: &SocketAddr) -> Result<()> {
         let mut stream = TcpStream::connect(address).await.map_err(Error::Io)?;
         stream.write_all(data).await.map_err(Error::Io)?;
         Ok(())
@@ -61,7 +61,7 @@ impl TCPManager {
 
 #[async_trait]
 impl NetworkLayer for TCPManager {
-    async fn send(&self, address: SocketAddr, data: &[u8]) -> Result<()> {
+    async fn send(&self, address: &SocketAddr, data: &[u8]) -> Result<()> {
         Self::async_send(data, address).await?;
         Ok(())
     }
@@ -70,14 +70,15 @@ impl NetworkLayer for TCPManager {
         self.handle_receive().await
     }
 
-    async fn broadcast(&self, data: &[u8], addresses: Vec<SocketAddr>) -> Result<()> {
+    async fn broadcast(&self, data: &[u8], addresses: &[SocketAddr]) -> Result<()> {
         let futures = addresses
-            .into_iter()
+            .iter()
             .map(|address| Self::async_send(data, address));
         join_all(futures)
             .await
             .into_iter()
             .collect::<std::result::Result<_, _>>()
+            // FIXME: We should let client decide what to do with the errors
             .map_err(|_e| NetworkError::BroadcastError)?;
         Ok(())
     }
@@ -131,7 +132,7 @@ mod tests {
             let _ = network_clone.receive().await.unwrap();
         });
 
-        let send_result = network.send(sock_addr(LOCALHOST, 8082), &data).await;
+        let send_result = network.send(&sock_addr(LOCALHOST, 8082), &data).await;
         assert!(send_result.is_ok());
 
         handler.await.unwrap();
@@ -147,7 +148,7 @@ mod tests {
             let _ = network_clone.receive().await.unwrap();
         });
 
-        let send_result = network.send(sock_addr(LOCALHOST, 8021), &data).await;
+        let send_result = network.send(&sock_addr(LOCALHOST, 8021), &data).await;
         assert!(send_result.is_err());
     }
 
@@ -160,7 +161,7 @@ mod tests {
         let handler = tokio::spawn(async move { network_clone.receive().await.unwrap() });
 
         network
-            .send(sock_addr(LOCALHOST, 8030), &data)
+            .send(&sock_addr(LOCALHOST, 8030), &data)
             .await
             .unwrap();
         let rx_data = handler.await.unwrap();
@@ -232,7 +233,9 @@ mod tests {
         }
 
         // broadcast the message
-        let broadcast_result = broadcasting_node.broadcast(&data, receiver_addresses).await;
+        let broadcast_result = broadcasting_node
+            .broadcast(&data, &receiver_addresses)
+            .await;
         assert!(broadcast_result.is_ok());
 
         // assert the data received on servers
@@ -272,7 +275,9 @@ mod tests {
         }
 
         // broadcast the data
-        let broadcast_result = broadcasting_node.broadcast(&data, receiver_addresses).await;
+        let broadcast_result = broadcasting_node
+            .broadcast(&data, &receiver_addresses)
+            .await;
         assert!(broadcast_result.is_err());
     }
 }
