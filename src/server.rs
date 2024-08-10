@@ -97,7 +97,6 @@ impl Server {
             o!("ip" => config.address.ip().to_string(), "port" => config.address.port(), "default leader" => config.default_leader.unwrap_or(1), "id" => id),
         );
 
-        // Get meta of all peers server of this server
         let peer_count = cluster_config.peer_count(id);
         let state = ServerState {
             current_term: 0,
@@ -621,7 +620,8 @@ impl Server {
             1u32.to_be_bytes(),
         ]
         .concat();
-        let leader_address = self.config.address;
+
+        let leader_address = self.cluster_config.address(id).unwrap();
         info!(
             self.log,
             "Sending append entries response to leader: {}", id
@@ -796,14 +796,18 @@ impl Server {
         let term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let node_ip_address = String::from_utf8(data[12..].to_vec()).unwrap();
 
-        // FIXME
-        // info!(
-        //     self.log,
-        //     "Current cluster nodes: {:?}, want join node: {}",
-        //     node_ip_address
-        // );
+        info!(
+            self.log,
+            "Current cluster nodes: {:?}, want join node: {}",
+            self.cluster_config
+                .peers()
+                .iter()
+                .map(|x| x.address.to_string())
+                .collect::<Vec<_>>(),
+            node_ip_address
+        );
 
-        if self.cluster_config.has_peer(node_id) {
+        if self.cluster_config.contains_server(node_id) {
             error!(
                 self.log,
                 "Node already exists in the cluster, Ignoring join request."
@@ -916,11 +920,11 @@ impl Server {
 
     // Helper function to access cluster config
     fn peers(&self) -> Vec<&NodeMeta> {
-        self.cluster_config.peers(self.id)
+        self.cluster_config.peers_for(self.id)
     }
 
     fn peers_address(&self) -> Vec<SocketAddr> {
-        self.cluster_config.peer_address(self.id)
+        self.cluster_config.peer_address_for(self.id)
     }
 
     fn peer_count(&self) -> usize {

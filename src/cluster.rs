@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 
 #[derive(Debug, Clone)]
 pub struct NodeMeta {
-    id: u32,
-    address: SocketAddr,
+    pub id: u32,
+    pub address: SocketAddr,
 }
 
 impl NodeMeta {
@@ -35,13 +35,17 @@ impl ClusterConfig {
         ClusterConfig { peers, id_node_map }
     }
 
+    pub fn peers(&self) -> &[NodeMeta] {
+        &self.peers
+    }
+
     // Return meta of peers for a node
-    pub fn peers(&self, id: u32) -> Vec<&NodeMeta> {
+    pub fn peers_for(&self, id: u32) -> Vec<&NodeMeta> {
         self.peers.iter().filter(|x| x.id != id).collect::<Vec<_>>()
     }
 
     // Return address of peers for a node
-    pub fn peer_address(&self, id: u32) -> Vec<SocketAddr> {
+    pub fn peer_address_for(&self, id: u32) -> Vec<SocketAddr> {
         self.peers
             .iter()
             .filter(|x| x.id != id)
@@ -56,8 +60,8 @@ impl ClusterConfig {
         self.id_node_map.get(&node_id)
     }
 
-    pub fn has_peer(&self, _node_id: u32) -> bool {
-        unimplemented!()
+    pub fn contains_server(&self, node_id: u32) -> bool {
+        self.id_node_map.contains_key(&node_id)
     }
 
     pub fn add_server(&mut self, n: NodeMeta) {
@@ -66,6 +70,6 @@ impl ClusterConfig {
     }
 
     pub fn peer_count(&self, id: u32) -> usize {
-        self.peers(id).len()
+        self.peers_for(id).len()
     }
 }
