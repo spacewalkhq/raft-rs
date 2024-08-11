@@ -55,8 +55,7 @@ async fn main() {
     // The following defines the basic configuration of the new node
     tokio::time::sleep(Duration::from_secs(10)).await;
     let new_node_id = 6;
-    let new_node_address =
-        SocketAddr::from_str(format!("127.0.0.1:{}", 5006).as_str()).unwrap();
+    let new_node_address = SocketAddr::from_str(format!("127.0.0.1:{}", 5006).as_str()).unwrap();
 
     let new_node_conf = ServerConfig {
         election_timeout: Duration::from_millis(1000),
