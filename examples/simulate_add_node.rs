@@ -25,13 +25,14 @@ async fn main() {
         NodeMeta::from((4, SocketAddr::from_str("127.0.0.1:5004").unwrap())),
         NodeMeta::from((5, SocketAddr::from_str("127.0.0.1:5005").unwrap())),
     ];
-    let mut cluster_config = ClusterConfig::new(peers);
+    let mut cluster_config = ClusterConfig::new(peers.clone());
     // Create server configs
-    let configs: Vec<_> = cluster_nodes
+    let configs: Vec<_> = peers
+        .clone()
         .iter()
-        .map(|&id| ServerConfig {
+        .map(|n| ServerConfig {
             election_timeout: Duration::from_millis(1000),
-            address: SocketAddr::from_str(format!("127.0.0.1:{}", 5000 + id).as_str()).unwrap(),
+            address: n.address,
             default_leader: Some(1 as u32),
             leadership_preferences: HashMap::new(),
             storage_location: Some("logs/".to_string()),
@@ -58,7 +59,7 @@ async fn main() {
     let new_node_address =
         SocketAddr::from_str(format!("127.0.0.1:{}", new_node_port).as_str()).unwrap();
     cluster_nodes.push(new_node_id);
-    // id_to_address_mapping.insert(new_node_id, new_node_address.to_string());
+
     cluster_config.add_server(NodeMeta::from((
         new_node_id,
         new_node_address.clone().into(),
@@ -99,7 +100,7 @@ async fn add_node_request(new_node_id: u32, addr: SocketAddr) {
         new_node_id.to_be_bytes().to_vec(),
         0u32.to_be_bytes().to_vec(),
         10u32.to_be_bytes().to_vec(),
-        addr.ip().to_string().as_bytes().to_vec(),
+        addr.to_string().as_bytes().to_vec(),
     ]
     .concat();
 
