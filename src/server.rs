@@ -4,12 +4,14 @@
 use crate::cluster::{ClusterConfig, NodeMeta};
 use crate::log::get_logger;
 use crate::network::{NetworkLayer, TCPManager};
-use crate::storage::{LocalStorage, Storage};
+use crate::storage::{LocalStorage, Storage, CHECKSUM_LEN};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
 use std::collections::{HashMap, VecDeque};
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,20 +53,20 @@ struct ServerState {
     votes_received: HashMap<u32, bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum LogCommand {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum LogCommand {
     Noop,
     Set,
     Delete,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LogEntry {
-    leader_id: u32,
-    server_id: u32,
-    term: u32,
-    command: LogCommand,
-    data: u32,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LogEntry {
+    pub leader_id: u32,
+    pub server_id: u32,
+    pub term: u32,
+    pub command: LogCommand,
+    pub data: u32,
 }
 
 #[derive(Debug)]
@@ -91,10 +93,10 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn new(id: u32, config: ServerConfig, cluster_config: ClusterConfig) -> Server {
+    pub async fn new(id: u32, config: ServerConfig, cluster_config: ClusterConfig) -> Server {
         let log = get_logger();
         let log = log.new(
-            o!("ip" => config.address.ip().to_string(), "port" => config.address.port(), "default leader" => config.default_leader.unwrap_or(1), "id" => id),
+            o!("ip" => config.address.ip().to_string(), "port" => config.address.port(), "id" => id),
         );
 
         let peer_count = cluster_config.peer_count(id);
@@ -118,7 +120,7 @@ impl Server {
             Some(location) => location + &format!("server_{}.log", id),
             None => format!("server_{}.log", id),
         };
-        let storage = LocalStorage::new(storage_location);
+        let storage = LocalStorage::new(storage_location).await;
 
         Server {
             id,
@@ -169,54 +171,53 @@ impl Server {
             return;
         }
 
-        let log_byte = self.storage.retrieve().await;
-        if let Ok(log) = log_byte {
-            for entry in log.chunks(std::mem::size_of::<LogEntry>()) {
-                if entry.len() != std::mem::size_of::<LogEntry>() {
-                    break;
-                }
-                let log_entry = self.deserialize_log_entries(entry);
-                if log_entry.term > self.state.current_term {
-                    self.state.current_term = log_entry.term;
-                }
-                self.state.log.push_front(log_entry);
-            }
-            info!(
-                self.log,
-                "Log after reading from disk: {:?}", self.state.log
-            );
-            info!(
-                self.log,
-                "Log after reading from disk: {:?}", self.state.log
-            );
-        } else {
-            // Data integrity check failed
-            if log_byte
-                .unwrap_err()
-                .to_string()
-                .contains("Data integrity check failed")
-            {
-                error!(self.log, "Data integrity check failed");
-                // try repair the log from other peers
-                // step1 delete the log file
-                if let Err(e) = self.storage.delete().await {
-                    error!(self.log, "Failed to delete log file: {}", e);
-                }
+        let log_byte = self.storage.retrieve().await.unwrap();
+        let log_entry_size = std::mem::size_of::<LogEntry>();
 
-                // step2 get the log from other peers
-                // ping all the peers to get the log
-                let addresses: Vec<SocketAddr> = self.peers_address();
-                let data = [
-                    self.id.to_be_bytes(),
-                    0u32.to_be_bytes(),
-                    2u32.to_be_bytes(),
-                ]
-                .concat();
-                let _ = self.network_manager.broadcast(&data, &addresses).await;
-                return;
+        // Data integrity check failed
+        // try repair the log from other peers
+        if log_byte.len() % (log_entry_size + CHECKSUM_LEN) != 0 {
+            error!(self.log, "Data integrity check failed");
+
+            // step1 delete the log file
+            if let Err(e) = self.storage.delete().await {
+                error!(self.log, "Failed to delete log file: {}", e);
             }
-            info!(self.log, "No log entries found on disk");
+
+            // step2 get the log from other peers
+            // ping all the peers to get the log
+            let addresses: Vec<SocketAddr> = self.peers_address();
+            let data = [
+                self.id.to_be_bytes(),
+                0u32.to_be_bytes(),
+                2u32.to_be_bytes(),
+            ]
+            .concat();
+            self.network_manager
+                .broadcast(&data, &addresses)
+                .await
+                .unwrap();
+            return;
         }
+
+        let mut cursor = Cursor::new(&log_byte);
+        loop {
+            let mut bytes_data = vec![0u8; log_entry_size + CHECKSUM_LEN];
+            if cursor.read_exact(&mut bytes_data).await.is_err() {
+                break;
+            }
+            bytes_data = bytes_data[0..log_entry_size].to_vec();
+
+            let log_entry = self.deserialize_log_entries(&bytes_data);
+            if log_entry.term > self.state.current_term {
+                self.state.current_term = log_entry.term;
+            }
+            self.state.log.push_front(log_entry);
+        }
+        info!(
+            self.log,
+            "Log after reading from disk: {:?}", self.state.log
+        );
 
         self.state.match_index = vec![0; self.peer_count() + 1];
         self.state.next_index = vec![0; self.peer_count() + 1];
@@ -359,8 +360,6 @@ impl Server {
                         self.write_buffer.clear();
                         self.debounce_timer = Instant::now();
                     }
-
-                    // debug!(self.log, "Leader id: {}, Leader state: {:?}", self.id, self.state);
                 },
             }
         }
@@ -574,24 +573,39 @@ impl Server {
 
         let id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let leader_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+        let message_type = u32::from_be_bytes(data[8..12].try_into().unwrap());
+        let prev_log_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
+        let commit_index = u32::from_be_bytes(data[16..20].try_into().unwrap());
+        info!(
+            self.log,
+            "Node {} received append entries request from Node {}, \
+             (term: self={}, receive={}), \
+             (prev_log_index: self={}, receive={}), \
+             (commit_index: self={}, receive={})",
+            self.id,
+            id,
+            self.state.current_term,
+            leader_term,
+            self.state.previous_log_index,
+            prev_log_index,
+            self.state.commit_index,
+            commit_index
+        );
 
         if leader_term < self.state.current_term {
             return;
         }
 
-        let message_type = u32::from_be_bytes(data[8..12].try_into().unwrap());
         if message_type != 2 {
             return;
         }
 
-        let prev_log_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
         if prev_log_index > self.state.previous_log_index {
             self.state.previous_log_index = prev_log_index;
         } else {
             return;
         }
 
-        let commit_index = u32::from_be_bytes(data[16..20].try_into().unwrap());
         if commit_index > self.state.commit_index {
             self.state.commit_index = commit_index;
         } else {
@@ -661,6 +675,16 @@ impl Server {
             let mut match_indices = self.state.match_index.clone();
             match_indices.sort();
             let quorum_index = match_indices[self.peer_count() / 2];
+
+            info!(
+                self.log,
+                "Append entry response received from node {}: (match_index = {}, next_index = {}), current quorum_index: {}", 
+                sender_id,
+                self.state.match_index[sender_id as usize - 1],
+                self.state.next_index[sender_id as usize - 1],
+                quorum_index
+            );
+
             if quorum_index >= self.state.commit_index {
                 self.state.commit_index = quorum_index;
                 // return client response
@@ -732,21 +756,28 @@ impl Server {
 
         let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
 
-        let log_byte = self.storage.retrieve().await;
-        if log_byte.is_err() {
-            error!(self.log, "Failed to retrieve log entries from disk");
+        let log_byte = self.storage.retrieve().await.unwrap();
+        let log_entry_size = std::mem::size_of::<LogEntry>();
+
+        // Data integrity check failed
+        if log_byte.len() % (log_entry_size + CHECKSUM_LEN) != 0 {
+            error!(self.log, "Data integrity check failed");
             return;
         }
 
-        let log = log_byte.unwrap();
-        let log_entries = log.chunks(std::mem::size_of::<LogEntry>());
+        let mut cursor = Cursor::new(&log_byte);
         let mut repair_data = Vec::new();
-        for entry in log_entries {
-            if entry.len() != std::mem::size_of::<LogEntry>() {
+        loop {
+            let mut bytes_data = vec![0u8; log_entry_size + CHECKSUM_LEN];
+            if cursor.read_exact(&mut bytes_data).await.is_err() {
                 break;
             }
-            repair_data.extend_from_slice(entry);
+            repair_data.extend_from_slice(&bytes_data[0..log_entry_size]);
         }
+        info!(
+            self.log,
+            "Send repair data from {} to {}, log_entry: {:?}", self.id, peer_id, self.state.log
+        );
 
         let mut response = [
             self.id.to_be_bytes(),
@@ -882,7 +913,6 @@ impl Server {
             self.log,
             "Persisting logs to disk from peer: {} to server: {}", id, self.id
         );
-        info!(self.log, "Data: {:?}", data);
 
         // Log Compaction
         if let Err(e) = self.storage.compaction().await {
@@ -898,12 +928,15 @@ impl Server {
             error!(self.log, "Failed to store log entry to disk: {}", e);
         }
 
-        info!(self.log, "Log after appending: {:?}", self.state.log);
+        info!(
+            self.log,
+            "Log persistence complete, current log count: {}",
+            self.state.log.len()
+        );
     }
 
     fn deserialize_log_entries(&self, data: &[u8]) -> LogEntry {
         // convert data to logEntry using bincode
-        info!(self.log, "Deserializing log entry: {:?}", data);
         bincode::deserialize(data).unwrap()
     }
 

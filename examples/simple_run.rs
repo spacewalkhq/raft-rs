@@ -9,8 +9,6 @@ use slog::{error, info};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::thread;
-use tokio::runtime::Runtime;
 use tokio::time::Duration;
 
 use raft_rs::network::{NetworkLayer, TCPManager};
@@ -34,7 +32,7 @@ async fn main() {
         .clone()
         .iter()
         .map(|n| ServerConfig {
-            election_timeout: Duration::from_millis(200),
+            election_timeout: Duration::from_millis(1000),
             address: n.address,
             default_leader: Some(1u32),
             leadership_preferences: HashMap::new(),
@@ -47,10 +45,9 @@ async fn main() {
     for (i, config) in configs.into_iter().enumerate() {
         let id = cluster_nodes[i];
         let cc = cluster_config.clone();
-        handles.push(thread::spawn(move || {
-            let rt = Runtime::new().unwrap();
-            let mut server = Server::new(id, config, cc);
-            rt.block_on(server.start());
+        handles.push(tokio::spawn(async move {
+            let mut server = Server::new(id, config, cc).await;
+            server.start().await;
         }));
     }
 
@@ -58,9 +55,8 @@ async fn main() {
     tokio::time::sleep(Duration::from_secs(20)).await;
     client_request(1, 42u32).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
-    // Join all server threads
     for handle in handles {
-        handle.join().unwrap();
+        handle.await.unwrap();
     }
 }
 
