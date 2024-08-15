@@ -33,8 +33,8 @@ pub enum NetworkError {
     ConnectError(SocketAddr),
     #[error("Failed binding to {0}")]
     BindError(SocketAddr),
-    #[error("Broadcast failed")]
-    BroadcastError,
+    #[error("Broadcast failed, errmsg: {0}")]
+    BroadcastError(String),
 }
 
 #[derive(Error, Debug)]
