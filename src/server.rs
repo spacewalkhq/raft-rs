@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
+use std::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 enum RaftState {
@@ -135,7 +136,7 @@ impl Server {
         }
     }
 
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self, rx: Option<mpsc::Receiver<()>>) {
         if let Err(e) = self.network_manager.open().await {
             error!(self.log, "Failed to open network manager: {}", e);
             return;
@@ -158,6 +159,11 @@ impl Server {
                 RaftState::Follower => self.follower().await,
                 RaftState::Candidate => self.candidate().await,
                 RaftState::Leader => self.leader().await,
+            }
+            if let Some(ref rx) = rx {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
             }
         }
     }
@@ -963,4 +969,59 @@ impl Server {
     fn peer_count(&self) -> usize {
         self.peers().len()
     }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::cluster::{ClusterConfig, NodeMeta};
+    use crate::server::{Server, ServerConfig, RaftState};
+    use std::time::Duration;
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+    use std::collections::HashMap;
+    use std::sync::mpsc;
+    use std::thread;
+
+    async fn server_util() -> Server {
+        let id: u32 = 3;
+        let peers = vec![
+            NodeMeta::from((1, SocketAddr::from_str("127.0.0.1:5001").unwrap())),
+            NodeMeta::from((2, SocketAddr::from_str("127.0.0.1:5002").unwrap())),
+            NodeMeta::from((3, SocketAddr::from_str("127.0.0.1:5003").unwrap())),
+            NodeMeta::from((4, SocketAddr::from_str("127.0.0.1:5004").unwrap())),
+            NodeMeta::from((5, SocketAddr::from_str("127.0.0.1:5005").unwrap())),
+        ];
+        let addr: SocketAddr = peers[0].address;
+        let cluster_config = ClusterConfig::new(peers.clone());
+        let server_config = ServerConfig {
+            election_timeout: Duration::from_millis(10),
+            address: addr,
+            default_leader: Some(3u32),
+            leadership_preferences: HashMap::new(),
+            storage_location: Some("".to_string()),
+        };
+        Server::new(id, server_config, cluster_config).await
+    }
+
+    #[tokio::test]
+    async fn test_server() {
+        let server = server_util().await.clone();
+        assert_eq!(server.state.state, RaftState::Follower)
+    }
+
+    #[tokio::test]
+    async fn test_server_start() {
+        // will send signal over channel to start method to exit out of the loop
+        let (tx, rx) = mpsc::channel();
+        let t = thread::spawn(move || async {
+            let mut server = server_util().await.clone();
+            server.start(Some(rx)).await;
+        });
+
+        thread::sleep(Duration::from_millis(100));
+        tx.send(()).unwrap();
+        let _ = t.join().unwrap();
+    }
+
 }
