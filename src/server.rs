@@ -1025,4 +1025,27 @@ mod tests {
         let _ = t.join().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_server_start_failed_quorum() {
+        let id: u32 = 2;
+        let peers = vec![
+            NodeMeta::from((1, SocketAddr::from_str("127.0.0.1:5001").unwrap())),
+            NodeMeta::from((2, SocketAddr::from_str("127.0.0.1:5002").unwrap())),
+        ];
+        let addr: SocketAddr = peers[0].address;
+        let cluster_config = ClusterConfig::new(peers.clone());
+        let server_config = ServerConfig {
+            election_timeout: Duration::from_millis(10),
+            address: addr,
+            default_leader: Some(1u32),
+            leadership_preferences: HashMap::new(),
+            storage_location: Some("".to_string()),
+        };
+        let mut server = Server::new(id, server_config, cluster_config).await;
+        server.start(None).await;
+        assert_eq!(server.peer_count(), 1);
+        let votes = server.state.votes_received.len();
+        assert_eq!(server.is_quorum(votes.try_into().unwrap()), false);
+    }
+
 }
