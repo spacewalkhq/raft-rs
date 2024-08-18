@@ -39,7 +39,7 @@ enum MessageType {
     JoinResponse,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ServerState {
     current_term: u32,
     state: RaftState,
@@ -70,7 +70,7 @@ pub struct LogEntry {
     pub data: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub election_timeout: Duration,
     pub address: SocketAddr,
@@ -80,6 +80,7 @@ pub struct ServerConfig {
     pub storage_location: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Server {
     pub id: u32,
     state: ServerState,
