@@ -71,19 +71,29 @@ async fn main() {
         sleep(Duration::from_secs(sleep_time)).await;
 
         let server_to_fail = rng.gen_range(1..=5);
-        warn!(log, "Simulating storage corruption for server {}", server_to_fail);
+        warn!(
+            log,
+            "Simulating storage corruption for server {}", server_to_fail
+        );
 
         // Simulate storage corruption on a running server
         let storage_path = format!("logs/");
         fs::create_dir_all(&storage_path).unwrap();
-        fs::write(format!("{}server_{}.log", storage_path, server_to_fail), b"").unwrap(); // Simulate corruption
+        fs::write(
+            format!("{}server_{}.log", storage_path, server_to_fail),
+            b"",
+        )
+        .unwrap(); // Simulate corruption
 
         // Restart the corrupted server to simulate recovery
         let cc: ClusterConfig = cluster_config.clone();
         let server_handle = tokio::spawn(async move {
             let config = ServerConfig {
                 election_timeout: Duration::from_millis(200),
-                address: SocketAddr::from_str(format!("127.0.0.1:{}", 5000 + server_to_fail).as_str()).unwrap(),
+                address: SocketAddr::from_str(
+                    format!("127.0.0.1:{}", 5000 + server_to_fail).as_str(),
+                )
+                .unwrap(),
                 default_leader: Some(1),
                 leadership_preferences: HashMap::new(),
                 storage_location: Some(storage_path.clone()),
@@ -91,7 +101,10 @@ async fn main() {
             let mut server = Server::new(server_to_fail.try_into().unwrap(), config, cc).await;
             server.start().await;
             // Handle recovery of corrupted storage
-            info!(get_logger(), "Server {} has recovered from storage corruption", server_to_fail);
+            info!(
+                get_logger(),
+                "Server {} has recovered from storage corruption", server_to_fail
+            );
         });
 
         server_handles[server_to_fail - 1] = server_handle;
