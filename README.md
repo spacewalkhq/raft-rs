@@ -1,6 +1,6 @@
 # Raft-rs
 An understandable, fast, scalable and optimized implementation of [Raft algoritm](https://en.wikipedia.org/wiki/Raft_(algorithm)).
-It is asynchronous(built on tokio runtime) and supports zero-copy. It does not assume storage to be non-malicious, if corrupted, it will repair the logs via peer-to-peer communication. 
+It is asynchronous(built on tokio runtime) and supports zero-copy. It does not assume storage to be non-malicious, if corrupted, it will repair the logs via peer-to-peer communication.
 
 ## Note
 - This project is still under development and is not yet production-ready. It is not recommended to use this in production environments.
@@ -15,7 +15,7 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 - [x] Scalable
 - [x] Zero-Copy support
 - [x] Asynchronous
-- [x] Default Leader 
+- [x] Default Leader
 - [x] Leadership preference
 - [x] Log compaction
 - [x] Tigerbeetle style replica repair
@@ -25,10 +25,9 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 ## To-Do
 - [ ] Production-ready
 - [ ] Test replica repair thoroughly
-- [ ] io_uring support
+- [ ] io_uring support for linux
 - [ ] Complete batch write implementation
 - [ ] Improve Log compaction
-- [ ] Improve error handling
 - [ ] RDMA support
 - [ ] Add more comprehensive tests
 - [ ] Enhance documentation
