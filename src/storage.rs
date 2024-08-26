@@ -36,6 +36,11 @@ pub struct LocalStorage {
 
 impl LocalStorage {
     pub async fn new(path: String) -> Self {
+        // Ensure the parent directory exists
+        if let Some(parent) = Path::new(&path).parent() {
+            fs::create_dir_all(parent).await.unwrap();
+        }
+
         let file = OpenOptions::new()
             .read(true)
             .write(true)
