@@ -49,7 +49,7 @@ async fn main() {
         let cc = cluster_config.clone();
         let server_handle = tokio::spawn(async move {
             // Simulate storage corruption when starting up
-            let storage_location = "logs".to_string();
+            let storage_location = "logs/".to_string();
             let corrupted = rand::thread_rng().gen_bool(0.3); // 30% chance of corruption
             if corrupted {
                 fs::create_dir_all(&storage_location).unwrap();

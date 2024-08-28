@@ -266,8 +266,6 @@ impl Server {
         // Vote for self
         self.state.voted_for = Some(self.id);
         self.state.votes_received.insert(self.id, true);
-
-        // TODO: Send RequestVote RPCs with leadership preferences
         let data = self.prepare_request_vote(self.id, self.state.current_term);
         let addresses: Vec<SocketAddr> = self.peers_address();
         info!(
@@ -678,7 +676,7 @@ impl Server {
 
             info!(
                 self.log,
-                "Append entry response received from node {}: (match_index = {}, next_index = {}), current quorum_index: {}", 
+                "Append entry response received from node {}: (match_index = {}, next_index = {}), current quorum_index: {}",
                 sender_id,
                 self.state.match_index[sender_id as usize - 1],
                 self.state.next_index[sender_id as usize - 1],

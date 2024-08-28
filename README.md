@@ -29,8 +29,6 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 - [ ] Complete batch write implementation
 - [ ] Improve Log compaction
 - [ ] RDMA support
-- [ ] Add more comprehensive tests
-- [ ] Enhance documentation
 - [ ] Deterministic Simulation Testing
 - [ ] Benchmarking
 
