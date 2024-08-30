@@ -46,7 +46,7 @@ async fn main() {
         let cc = cluster_config.clone();
         let server_handle = tokio::spawn(async move {
             let mut server = Server::new(id, config, cc).await;
-            server.start().await;
+            server.start(None).await;
         });
         server_handles.push(server_handle);
     }
@@ -78,7 +78,7 @@ async fn main() {
         let cc = cluster_config.clone();
         let server_handle = tokio::spawn(async move {
             let mut server = Server::new(server_to_stop.try_into().unwrap(), config, cc).await;
-            server.start().await;
+            server.start(None).await;
         });
         server_handles[server_to_stop - 1] = server_handle;
     }

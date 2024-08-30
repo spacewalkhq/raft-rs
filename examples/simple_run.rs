@@ -47,7 +47,7 @@ async fn main() {
         let cc = cluster_config.clone();
         handles.push(tokio::spawn(async move {
             let mut server = Server::new(id, config, cc).await;
-            server.start().await;
+            server.start(None).await;
         }));
     }
 

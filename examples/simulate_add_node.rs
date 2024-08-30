@@ -44,7 +44,7 @@ async fn main() {
         let cc = cluster_config.clone();
         handles.push(tokio::spawn(async move {
             let mut server = Server::new(id, config, cc).await;
-            server.start().await;
+            server.start(None).await;
         }));
     }
 
@@ -65,7 +65,7 @@ async fn main() {
     // Launching a new node
     handles.push(tokio::spawn(async move {
         let mut server = Server::new(new_node_id, new_node_conf, cluster_config).await;
-        server.start().await;
+        server.start(None).await;
     }));
 
     // Simulate sending a Raft Join request after a few seconds
