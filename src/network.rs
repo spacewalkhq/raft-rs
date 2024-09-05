@@ -77,7 +77,7 @@ impl NetworkLayer for TCPManager {
         join_all(futures)
             .await
             .into_iter()
-            .collect::<std::result::Result<_, _>>()
+            .collect::<Result<Vec<()>>>()
             // FIXME: We should let client decide what to do with the errors
             .map_err(|e| NetworkError::BroadcastError(e.to_string()))?;
         Ok(())

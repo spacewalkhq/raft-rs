@@ -4,14 +4,18 @@
 use crate::cluster::{ClusterConfig, NodeMeta};
 use crate::log::get_logger;
 use crate::network::{NetworkLayer, TCPManager};
+use crate::state_mechine::{self, StateMachine};
 use crate::storage::{LocalStorage, Storage, CHECKSUM_LEN};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,20 +40,59 @@ enum MessageType {
     // dynamic membership changes
     JoinRequest,
     JoinResponse,
+
+    BatchAppendEntries,
+    BatchAppendEntriesResponse,
 }
 
 #[derive(Debug)]
+/// Represents the state of a Raft server, which includes information
+/// about the current term, election state, and log entries.
 struct ServerState {
+    /// The current term number, which increases monotonically.
+    /// It is used to identify the latest term known to this server.
     current_term: u32,
+
+    /// The current state of the server in the Raft protocol
+    /// (e.g., Leader, Follower, or Candidate).
     state: RaftState,
+
+    /// The candidate ID that this server voted for in the current term.
+    /// It is `None` if the server hasn't voted for anyone in this term.
     voted_for: Option<u32>,
-    log: VecDeque<LogEntry>,
+
+    /// A deque of log entries that are replicated to the Raft cluster.
+    // log: VecDeque<LogEntry>,
+    state_machine: Arc<Mutex<Box<dyn StateMachine>>>,
+
+    /// The index of the highest log entry known to be committed.
+    /// This indicates the index up to which the state machine is consistent.
     commit_index: u32,
+
+    /// The index of the previous log entry used for consistency checks.
+    /// Typically used during the append entries process.
     previous_log_index: u32,
+
+    /// For each follower, the next log entry to send to that follower.
+    /// This is used by the leader to keep track of what entries have been
+    /// sent to each follower.
     next_index: Vec<u32>,
+
+    /// For each follower, the highest log entry index that is known to
+    /// be replicated on that follower.
     match_index: Vec<u32>,
+
+    /// The election timeout duration. If this time passes without receiving
+    /// a valid heartbeat or a vote request, the server will trigger an election.
     election_timeout: Duration,
+
+    /// The time when the last heartbeat from the current leader was received.
+    /// Used by followers to detect if the leader has failed.
     last_heartbeat: Instant,
+
+    /// A map of received votes in the current election term. The key is the
+    /// peer's ID and the value is a boolean indicating whether the vote was
+    /// granted.
     votes_received: HashMap<u32, bool>,
 }
 
@@ -93,18 +136,47 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn new(id: u32, config: ServerConfig, cluster_config: ClusterConfig) -> Server {
+    pub async fn new(
+        id: u32,
+        config: ServerConfig,
+        cluster_config: ClusterConfig,
+        state_machine: Option<Box<dyn StateMachine>>,
+    ) -> Server {
         let log = get_logger();
         let log = log.new(
             o!("ip" => config.address.ip().to_string(), "port" => config.address.port(), "id" => id),
         );
+
+        // if storage location is provided, use it else set empty string to use default location
+        let storage_location = match config.storage_location.clone() {
+            Some(location) => location + &format!("server_{}.log", id),
+            None => format!("server_{}.log", id),
+        };
+        let storage = LocalStorage::new(storage_location.clone()).await;
+        let parent_path = PathBuf::from(storage_location)
+            .parent() // This returns Option<&Path>
+            .map(|p| p.to_path_buf()) // Convert &Path to PathBuf
+            .unwrap_or_else(|| PathBuf::from("logs")); // Provide default path
+
+        // Use the provided state_machine or default to FileStateMachine if none is provided
+        let state_machine = state_machine.unwrap_or_else(|| {
+            // Default FileStateMachine initialization
+            let snapshot_path = parent_path.join(format!("server_{}_snapshot.log", id));
+
+            Box::new(state_mechine::FileStateMachine::new(
+                &snapshot_path,
+                Duration::from_secs(60 * 60),
+            ))
+        });
+
+        let state_machine = Arc::new(Mutex::new(state_machine));
 
         let peer_count = cluster_config.peer_count(id);
         let state = ServerState {
             current_term: 0,
             state: RaftState::Follower,
             voted_for: None,
-            log: VecDeque::new(),
+            state_machine,
             commit_index: 0,
             previous_log_index: 0,
             next_index: vec![0; peer_count],
@@ -114,13 +186,6 @@ impl Server {
             votes_received: HashMap::new(),
         };
         let network_manager = TCPManager::new(config.address);
-
-        // if storage location is provided, use it else set empty string to use default location
-        let storage_location = match config.storage_location.clone() {
-            Some(location) => location + &format!("server_{}.log", id),
-            None => format!("server_{}.log", id),
-        };
-        let storage = LocalStorage::new(storage_location).await;
 
         Server {
             id,
@@ -200,6 +265,8 @@ impl Server {
             return;
         }
 
+        let state_machine = Arc::clone(&self.state.state_machine);
+        // Attempting to recover LogEntry from a disk file
         let mut cursor = Cursor::new(&log_byte);
         loop {
             let mut bytes_data = vec![0u8; log_entry_size + CHECKSUM_LEN];
@@ -212,11 +279,25 @@ impl Server {
             if log_entry.term > self.state.current_term {
                 self.state.current_term = log_entry.term;
             }
-            self.state.log.push_front(log_entry);
+            state_machine
+                .lock()
+                .await
+                .apply_log_entry(
+                    self.state.current_term,
+                    self.state.commit_index,
+                    log_entry.clone(),
+                )
+                .await;
+
+            // After restoring the LogEntry, the node's state information should be updated
+            self.state.current_term = log_entry.term;
         }
+
         info!(
             self.log,
-            "Log after reading from disk: {:?}", self.state.log
+            "Log after reading from disk: {:?}, current term: {}",
+            state_machine.lock().await.get_log_entry().await,
+            self.state.current_term
         );
 
         self.state.match_index = vec![0; self.peer_count() + 1];
@@ -233,7 +314,29 @@ impl Server {
                 }
             }
         }
+
+        let state_machine = Arc::clone(&self.state.state_machine);
         loop {
+            if state_machine.lock().await.need_create_snapshot().await {
+                let state_machine_clone = Arc::clone(&self.state.state_machine);
+                let log_clone = self.log.clone();
+                let node_id_clone = self.id;
+                tokio::spawn(async move {
+                    let mut state_machine_lock = state_machine_clone.lock().await;
+                    if let Err(e) = state_machine_lock.create_snapshot().await {
+                        error!(
+                            log_clone,
+                            "Node: {}, failed to create snapshot: {:?}", node_id_clone, e
+                        );
+                    } else {
+                        info!(
+                            log_clone,
+                            "Node: {}, snapshot created successfully.", node_id_clone
+                        );
+                    }
+                });
+            }
+
             let timeout_duration = self.state.election_timeout;
 
             let timeout_future = async {
@@ -314,11 +417,35 @@ impl Server {
         if self.state.state != RaftState::Leader {
             return;
         }
-        info!(self.log, "Server {} is the leader", self.id);
+        info!(
+            self.log,
+            "Server {} is the leader, term: {}", self.id, self.state.current_term
+        );
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_millis(300));
 
+        let state_machine = Arc::clone(&self.state.state_machine);
         loop {
+            if state_machine.lock().await.need_create_snapshot().await {
+                let state_machine_clone = Arc::clone(&self.state.state_machine);
+                let log_clone = self.log.clone();
+                let node_id_clone = self.id;
+                tokio::spawn(async move {
+                    let mut state_machine_lock = state_machine_clone.lock().await;
+                    if let Err(e) = state_machine_lock.create_snapshot().await {
+                        error!(
+                            log_clone,
+                            "Node: {}, failed to create snapshot: {:?}", node_id_clone, e
+                        );
+                    } else {
+                        info!(
+                            log_clone,
+                            "Node: {}, snapshot created successfully.", node_id_clone
+                        );
+                    }
+                });
+            }
+
             let rpc_future = self.receive_rpc();
             tokio::select! {
                 _ = heartbeat_interval.tick() => {
@@ -420,6 +547,8 @@ impl Server {
             9 => MessageType::RepairResponse,
             10 => MessageType::JoinRequest,
             11 => MessageType::JoinResponse,
+            12 => MessageType::BatchAppendEntries,
+            13 => MessageType::BatchAppendEntriesResponse,
             _ => return,
         };
 
@@ -472,6 +601,12 @@ impl Server {
             MessageType::JoinResponse => {
                 self.handle_join_response(&data).await;
             }
+            MessageType::BatchAppendEntries => {
+                self.handle_batch_append_entries(&data).await;
+            }
+            MessageType::BatchAppendEntriesResponse => {
+                self.handle_batch_append_entries_response(&data).await;
+            }
         }
     }
 
@@ -480,23 +615,28 @@ impl Server {
             return;
         }
 
-        let term = self.state.current_term;
+        self.state.previous_log_index += 1;
+        self.state.commit_index += 1;
+        self.state.current_term += 1;
+
         let command = LogCommand::Set;
         let data = u32::from_be_bytes(data[12..16].try_into().unwrap());
         let entry = LogEntry {
             leader_id: self.id,
             server_id: self.id,
-            term,
+            term: self.state.current_term,
             command,
             data,
         };
         info!(self.log, "Received client request: {:?}", entry);
         self.write_buffer.push(entry.clone());
 
-        self.state.log.push_front(entry);
-        self.state.previous_log_index += 1;
-        self.state.commit_index += 1;
-        self.state.current_term += 1;
+        let state_machine = Arc::clone(&self.state.state_machine);
+        state_machine
+            .lock()
+            .await
+            .apply_log_entry(self.state.current_term, self.state.commit_index, entry)
+            .await;
     }
 
     async fn handle_request_vote(&mut self, data: &[u8]) {
@@ -765,6 +905,7 @@ impl Server {
 
         let mut cursor = Cursor::new(&log_byte);
         let mut repair_data = Vec::new();
+        let state_machine = Arc::clone(&self.state.state_machine);
         loop {
             let mut bytes_data = vec![0u8; log_entry_size + CHECKSUM_LEN];
             if cursor.read_exact(&mut bytes_data).await.is_err() {
@@ -774,7 +915,10 @@ impl Server {
         }
         info!(
             self.log,
-            "Send repair data from {} to {}, log_entry: {:?}", self.id, peer_id, self.state.log
+            "Send repair data from {} to {}, log_entry: {:?}",
+            self.id,
+            peer_id,
+            state_machine.lock().await.get_log_entry().await
         );
 
         let mut response = [
@@ -849,6 +993,7 @@ impl Server {
             return;
         }
 
+        // Add the new node's information to the cluster, ready to receive subsequent data
         self.cluster_config
             .add_server((node_id, node_ip_address.parse::<SocketAddr>().unwrap()).into());
 
@@ -865,6 +1010,42 @@ impl Server {
         let peer_address = self.cluster_config.address(node_id).unwrap();
         if let Err(e) = self.network_manager.send(&peer_address, &response).await {
             error!(self.log, "Failed to send join response: {}", e);
+        }
+
+        // Here we will send the snapshot data to the new node
+        let state_machine = Arc::clone(&self.state.state_machine);
+        let log_entrys = if let Ok(data) = state_machine.lock().await.get_log_entry().await {
+            data
+        } else {
+            error!(self.log, "Failed to get log entrys from state machine.");
+            return;
+        };
+        info!(self.log, "Sending log entrys to new node: {:?}", log_entrys);
+
+        let log_entry_bytes = if let Ok(b) = bincode::serialize(&log_entrys) {
+            b
+        } else {
+            error!(self.log, "Failed to serialize log entrys.");
+            return;
+        };
+
+        let mut batch_append_entry_request: Vec<u8> = Vec::new();
+        batch_append_entry_request.extend_from_slice(&self.id.to_be_bytes());
+        batch_append_entry_request
+            .extend_from_slice(&state_machine.lock().await.get_term().await.to_be_bytes());
+        batch_append_entry_request.extend_from_slice(&12u32.to_be_bytes());
+        batch_append_entry_request
+            .extend_from_slice(&state_machine.lock().await.get_index().await.to_be_bytes());
+        batch_append_entry_request.extend_from_slice(&log_entry_bytes);
+        if let Err(e) = self
+            .network_manager
+            .send(&peer_address, &batch_append_entry_request)
+            .await
+        {
+            error!(
+                self.log,
+                "Failed send batch append entry request to {}, err: {}", peer_address, e
+            );
         }
     }
 
@@ -906,6 +1087,55 @@ impl Server {
         );
     }
 
+    async fn handle_batch_append_entries(&mut self, data: &[u8]) {
+        let leader_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let last_included_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+        let last_included_index = u32::from_be_bytes(data[12..16].try_into().unwrap());
+        let log_entrys = if let Ok(data) = bincode::deserialize::<Vec<LogEntry>>(&data[16..]) {
+            data
+        } else {
+            info!(self.log, "Failed to deserialize log entrys.");
+            return;
+        };
+
+        self.state.current_term = last_included_term;
+        self.state.commit_index = last_included_index;
+        self.state.previous_log_index = last_included_index;
+        let state_machine = Arc::clone(&self.state.state_machine);
+        state_machine
+            .lock()
+            .await
+            .apply_log_entrys(last_included_term, last_included_index, log_entrys)
+            .await;
+
+        let response = [
+            self.id.to_be_bytes(),
+            self.state.current_term.to_be_bytes(),
+            13u32.to_be_bytes(),
+        ]
+        .concat();
+        let peer_address = if let Some(addr) = self.cluster_config.address(leader_id) {
+            addr
+        } else {
+            info!(self.log, "Failed to get peer address.");
+            return;
+        };
+        if let Err(e) = self.network_manager.send(&peer_address, &response).await {
+            error!(self.log, "Failed to send join response: {}", e);
+        }
+    }
+
+    async fn handle_batch_append_entries_response(&mut self, data: &[u8]) {
+        if self.state.state != RaftState::Leader {
+            return;
+        }
+
+        let peer_id = u32::from_be_bytes(data[0..4].try_into().unwrap());
+        let last_included_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
+
+        info!(self.log, "Received batch append entries response from peer: {}, current peer last_included_term: {}", peer_id, last_included_term);
+    }
+
     async fn persist_to_disk(&mut self, id: u32, data: &[u8]) {
         info!(
             self.log,
@@ -917,10 +1147,16 @@ impl Server {
             error!(self.log, "Failed to do compaction on disk: {}", e);
         }
 
+        let state_machine = Arc::clone(&self.state.state_machine);
+        // let mut state_machine_lock = state_machine.lock().await;
         if self.state.state == RaftState::Follower {
             // deserialize log entries and append to log
             let log_entry = self.deserialize_log_entries(data);
-            self.state.log.push_front(log_entry);
+            state_machine
+                .lock()
+                .await
+                .apply_log_entry(self.state.current_term, self.state.commit_index, log_entry)
+                .await;
         }
         if let Err(e) = self.storage.store(data).await {
             error!(self.log, "Failed to store log entry to disk: {}", e);
@@ -929,7 +1165,13 @@ impl Server {
         info!(
             self.log,
             "Log persistence complete, current log count: {}",
-            self.state.log.len()
+            state_machine
+                .lock()
+                .await
+                .get_log_entry()
+                .await
+                .unwrap()
+                .len()
         );
     }
 
