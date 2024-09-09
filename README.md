@@ -1,5 +1,5 @@
 # Raft-rs
-An understandable, fast, scalable and optimized implementation of [Raft algoritm](https://en.wikipedia.org/wiki/Raft_(algorithm)).
+An understandable, fast, scalable and optimized implementation of [Raft consensus algorithm](https://en.wikipedia.org/wiki/Raft_(algorithm)).
 It is asynchronous(built on tokio runtime) and supports zero-copy. It does not assume storage to be non-malicious, if corrupted, it will repair the logs via peer-to-peer communication.
 
 ## Note
