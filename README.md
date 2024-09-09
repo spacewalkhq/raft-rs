@@ -18,6 +18,7 @@ It is asynchronous(built on tokio runtime) and supports zero-copy. It does not a
 - [x] Default Leader
 - [x] Leadership preference
 - [x] Log compaction
+- [x] Snapshot Support
 - [x] Tigerbeetle style replica repair
 - [x] Dynamic cluster membership changes support
 - [x] Test for dynamic cluster membership changes
