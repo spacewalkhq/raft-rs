@@ -43,7 +43,7 @@ async fn main() {
         let id = cluster_nodes[i];
         let cc = cluster_config.clone();
         handles.push(tokio::spawn(async move {
-            let mut server = Server::new(id, config, cc).await;
+            let mut server = Server::new(id, config, cc, None).await;
             server.start().await;
         }));
     }
@@ -64,7 +64,7 @@ async fn main() {
 
     // Launching a new node
     handles.push(tokio::spawn(async move {
-        let mut server = Server::new(new_node_id, new_node_conf, cluster_config).await;
+        let mut server = Server::new(new_node_id, new_node_conf, cluster_config, None).await;
         server.start().await;
     }));
 

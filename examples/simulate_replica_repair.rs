@@ -57,7 +57,7 @@ async fn main() {
                 warn!(get_logger(), "Storage for server {} is corrupted", id);
             }
 
-            let mut server = Server::new(id, config, cc).await;
+            let mut server = Server::new(id, config, cc, None).await;
             server.start().await;
         });
         server_handles.push(server_handle);
@@ -98,7 +98,8 @@ async fn main() {
                 leadership_preferences: HashMap::new(),
                 storage_location: Some(storage_path.clone()),
             };
-            let mut server = Server::new(server_to_fail.try_into().unwrap(), config, cc).await;
+            let mut server =
+                Server::new(server_to_fail.try_into().unwrap(), config, cc, None).await;
             server.start().await;
             // Handle recovery of corrupted storage
             info!(

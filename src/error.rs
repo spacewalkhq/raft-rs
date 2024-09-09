@@ -21,6 +21,9 @@ pub enum Error {
     /// Some other error occurred.
     #[error("unknown error {0}")]
     Unknown(#[from] Box<dyn std::error::Error + Sync + Send>),
+    /// To handle all bincode error
+    #[error("Bincode error {0}")]
+    BincodeError(#[from] bincode::Error),
 }
 
 #[derive(Error, Debug)]
@@ -39,6 +42,8 @@ pub enum NetworkError {
 
 #[derive(Error, Debug)]
 pub enum StorageError {
+    #[error("Path not found")]
+    PathNotFound,
     #[error("File is empty")]
     EmptyFile,
     #[error("File is corrupted")]
