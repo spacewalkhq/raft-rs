@@ -728,8 +728,6 @@ impl Server {
             return;
         }
 
-        self.state.last_heartbeat = Instant::now();
-
         let id = u32::from_be_bytes(data[0..4].try_into().unwrap());
         let leader_term = u32::from_be_bytes(data[4..8].try_into().unwrap());
         let message_type = u32::from_be_bytes(data[8..12].try_into().unwrap());
@@ -754,6 +752,11 @@ impl Server {
         if leader_term < self.state.current_term {
             return;
         }
+
+        // Reset heartbeat only after validating the leader's term
+        self.state.last_heartbeat = Instant::now();
+        // Adopt the leader's term
+        self.state.current_term = leader_term;
 
         if message_type != 2 {
             return;
@@ -790,7 +793,7 @@ impl Server {
 
         let _ = self.persist_to_disk(id, &data).await;
 
-        self.state.current_term += 1; // increment term on successful append for follower
+        // Term is already set to leader_term after validation above
 
         let response = [
             self.id.to_be_bytes(),
